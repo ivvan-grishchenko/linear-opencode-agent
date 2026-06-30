@@ -1,41 +1,45 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "linear-opencode-agent",
-  "main": "src/index.ts",
-  "compatibility_date": "2024-09-23",
-  "compatibility_flags": ["nodejs_compat"],
-  "observability": {
-    "enabled": true
-  },
-  "kv_namespaces": [
-    {
-      "binding": "LINEAR_TOKENS",
-      "id": "<your-linear-tokens-kv-id>"
-    },
-    {
-      "binding": "SESSION_STATE",
-      "id": "<your-session-state-kv-id>"
-    }
-  ],
-  "queues": {
-    "producers": [
-      {
-        "binding": "CODING_TASKS",
-        "queue": "linear-opencode-agent-tasks"
-      }
-    ],
-    "consumers": [
-      {
-        "queue": "linear-opencode-agent-tasks",
-        "max_concurrency": 1,
-        "max_batch_size": 1,
-        "max_batch_timeout": 30
-      }
-    ]
-  },
-  "vars": {
-    "LINEAR_CLIENT_ID": "<your-linear-client-id>",
-    "WORKER_URL": "https://linear-opencode-agent.<your-subdomain>.workers.dev",
-    "OPENCODE_SERVER_URL": "https://<your-opencode-railway-service>.up.railway.app"
-  }
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "linear-opencode-agent",
+	"main": "src/index.ts",
+	"compatibility_date": "2024-09-23",
+	"compatibility_flags": ["nodejs_compat"],
+	"observability": {
+		"enabled": true
+	},
+	"kv_namespaces": [
+		{
+			"binding": "LINEAR_TOKENS",
+			"id": "<your-linear-tokens-kv-id>"
+		},
+		{
+			"binding": "SESSION_STATE",
+			"id": "<your-session-state-kv-id>"
+		},
+		{
+			"binding": "REPO_MAP",
+			"id": "<your-repo-map-kv-id>"
+		},
+	],
+	"queues": {
+		"producers": [
+			{
+				"binding": "CODING_TASKS",
+				"queue": "linear-opencode-agent-tasks"
+			}
+		],
+		"consumers": [
+			{
+				"queue": "linear-opencode-agent-tasks",
+				"max_concurrency": 1,
+				"max_batch_size": 1,
+				"max_batch_timeout": 30
+			}
+		]
+	},
+	"vars": {
+		"LINEAR_CLIENT_ID": "<your-linear-client-id>",
+		"WORKER_URL": "https://linear-opencode-agent.<your-subdomain>.workers.dev",
+		"OPENCODE_SERVER_URL": "https://<your-opencode-railway-service>.up.railway.app"
+	}
 }

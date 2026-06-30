@@ -1,41 +1,47 @@
 {
-  "name": "linear-opencode-agent",
-  "version": "1.0.0",
-  "description": "Linear AI agent that codes on assigned issues and assists in comments via opencode",
-  "main": "src/index.ts",
-  "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "test": "vitest",
-    "typecheck": "tsc --noEmit",
-    "cf-typegen": "wrangler types"
-  },
-  "keywords": [
-    "linear",
-    "opencode",
-    "ai-agent",
-    "cloudflare-worker"
-  ],
-  "author": "",
-  "license": "ISC",
-  "devEngines": {
-    "packageManager": {
-      "name": "pnpm",
-      "version": "^11.1.2",
-      "onFail": "download"
-    }
-  },
-  "type": "module",
-  "dependencies": {
-    "@linear/sdk": "^86.0.0",
-    "@opencode-ai/sdk": "^1.17.9"
-  },
-  "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.16.18",
-    "@cloudflare/workers-types": "^4.20260621.1",
-    "@types/node": "^26.0.0",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.9",
-    "wrangler": "^4.103.0"
-  }
+	"name": "linear-opencode-agent",
+	"version": "1.0.0",
+	"description": "Linear AI agent that codes on assigned issues and assists in comments via opencode",
+	"main": "src/index.ts",
+	"scripts": {
+		"dev": "wrangler dev",
+		"deploy": "wrangler deploy",
+		"test": "vitest",
+		"typecheck": "tsc --noEmit",
+		"cf-typegen": "wrangler types",
+		"lint": "oxlint",
+		"lint:fix": "oxlint --fix",
+		"format": "oxfmt",
+		"format:check": "oxfmt --check"
+	},
+	"keywords": [
+		"linear",
+		"opencode",
+		"ai-agent",
+		"cloudflare-worker"
+	],
+	"author": "Grishchenko, Ivan",
+	"license": "ISC",
+	"devEngines": {
+		"packageManager": {
+			"name": "pnpm",
+			"version": "^11.1.2",
+			"onFail": "download"
+		}
+	},
+	"type": "module",
+	"dependencies": {
+		"@linear/sdk": "^86.0.0",
+		"@opencode-ai/sdk": "^1.17.9"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "^0.16.18",
+		"@cloudflare/workers-types": "^4.20260621.1",
+		"@types/node": "^26.0.0",
+		"oxfmt": "^0.55.0",
+		"oxlint": "^1.70.0",
+		"typescript": "^6.0.3",
+		"vitest": "^4.1.9",
+		"wrangler": "^4.103.0"
+	}
 }

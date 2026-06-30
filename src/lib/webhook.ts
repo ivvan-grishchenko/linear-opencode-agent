@@ -1,7 +1,16 @@
-import type { AgentSessionEventWebhookPayload } from "@linear/sdk";
-import type { CodingTaskMessage, Env } from "../types";
-import { createLinearClient, emitAgentActivity } from "./linear";
-import { AgentActivityType } from "@linear/sdk";
+import type { AgentSessionEventWebhookPayload } from '@linear/sdk';
+
+import { AgentActivityType } from '@linear/sdk';
+
+import type { CodingTaskMessage, Env } from '../types';
+
+import {
+	createLinearClient,
+	emitAgentActivity,
+	postIssueComment,
+	removeAgentDelegate,
+} from './linear';
+import { buildOpencodeServerUrl, resolveRepositoryName } from './repo-mapping';
 
 const SESSION_MARKER_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
 const WEBHOOK_TIMESTAMP_TOLERANCE_MS = 60 * 1000;
@@ -14,66 +23,59 @@ const WEBHOOK_TIMESTAMP_TOLERANCE_MS = 60 * 1000;
  * available in Cloudflare Workers.
  */
 export async function verifyWebhook(
-  request: Request,
-  secret: string,
+	request: Request,
+	secret: string
 ): Promise<AgentSessionEventWebhookPayload> {
-  const signature = request.headers.get("linear-signature") ?? "";
-  const timestampHeader = request.headers.get("linear-timestamp");
+	const signature = request.headers.get('linear-signature') ?? '';
+	const timestampHeader = request.headers.get('linear-timestamp');
 
-  const rawBody = await request.arrayBuffer();
-  const isValid = await verifyLinearSignature(
-    secret,
-    new Uint8Array(rawBody),
-    signature,
-  );
-  if (!isValid) {
-    throw new Error("Invalid webhook signature");
-  }
+	const rawBody = await request.arrayBuffer();
+	const isValid = await verifyLinearSignature(secret, new Uint8Array(rawBody), signature);
+	if (!isValid) {
+		throw new Error('Invalid webhook signature');
+	}
 
-  const payload = JSON.parse(
-    new TextDecoder().decode(rawBody),
-  ) as AgentSessionEventWebhookPayload & { webhookTimestamp?: number };
+	const payload = JSON.parse(
+		new TextDecoder().decode(rawBody)
+	) as AgentSessionEventWebhookPayload & { webhookTimestamp?: number };
 
-  const timestamp =
-    payload.webhookTimestamp ??
-    (timestampHeader ? parseInt(timestampHeader, 10) : NaN);
-  if (Number.isNaN(timestamp)) {
-    throw new Error("Invalid webhook timestamp");
-  }
-  if (Math.abs(Date.now() - timestamp) > WEBHOOK_TIMESTAMP_TOLERANCE_MS) {
-    throw new Error("Webhook timestamp too old");
-  }
+	const timestamp =
+		payload.webhookTimestamp ?? (timestampHeader ? parseInt(timestampHeader, 10) : NaN);
+	if (Number.isNaN(timestamp)) throw new Error('Invalid webhook timestamp');
 
-  return payload;
+	if (Math.abs(Date.now() - timestamp) > WEBHOOK_TIMESTAMP_TOLERANCE_MS)
+		throw new Error('Webhook timestamp too old');
+
+	return payload;
 }
 
 async function verifyLinearSignature(
-  secret: string,
-  body: Uint8Array,
-  signature: string,
+	secret: string,
+	body: Uint8Array,
+	signature: string
 ): Promise<boolean> {
-  if (!signature) return false;
+	if (!signature) return false;
 
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const mac = await crypto.subtle.sign("HMAC", key, body);
-  const expectedHex = Array.from(new Uint8Array(mac))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+	const encoder = new TextEncoder();
+	const key = await crypto.subtle.importKey(
+		'raw',
+		encoder.encode(secret),
+		{ name: 'HMAC', hash: 'SHA-256' },
+		false,
+		['sign']
+	);
+	const mac = await crypto.subtle.sign('HMAC', key, body);
+	const expectedHex = Array.from(new Uint8Array(mac))
+		.map((b) => b.toString(16).padStart(2, '0'))
+		.join('');
 
-  // Constant-time hex comparison.
-  if (expectedHex.length !== signature.length) return false;
-  let diff = 0;
-  for (let i = 0; i < expectedHex.length; i++) {
-    diff |= expectedHex.charCodeAt(i) ^ signature.charCodeAt(i);
-  }
-  return diff === 0;
+	// Constant-time hex comparison.
+	if (expectedHex.length !== signature.length) return false;
+	let diff = 0;
+	for (let i = 0; i < expectedHex.length; i++) {
+		diff |= expectedHex.charCodeAt(i) ^ signature.charCodeAt(i);
+	}
+	return diff === 0;
 }
 
 /**
@@ -82,73 +84,89 @@ async function verifyLinearSignature(
  * emit an initial thought activity for `created` events.
  */
 export async function handleAgentSessionWebhook(
-  env: Env,
-  payload: AgentSessionEventWebhookPayload,
+	env: Env,
+	payload: AgentSessionEventWebhookPayload
 ): Promise<Response> {
-  const action = payload.action;
-  const agentSessionId = payload.agentSession.id;
-  const organizationId = payload.organizationId;
+	const action = payload.action;
+	const agentSessionId = payload.agentSession.id;
+	const organizationId = payload.organizationId;
 
-  if (action === "created") {
-    const markerKey = getSessionMarkerKey(agentSessionId);
-    const existing = await env.SESSION_STATE.get(markerKey);
-    if (existing) {
-      // Duplicate webhook — already queued.
-      return new Response("OK", { status: 200 });
-    }
+	if (action === 'created') {
+		const issueId = payload.agentSession.issue?.id;
+		const isMention = Boolean(payload.agentSession.comment);
 
-    await env.SESSION_STATE.put(
-      markerKey,
-      JSON.stringify({ kind: "marker", queuedAt: Date.now() }),
-      { expirationTtl: SESSION_MARKER_TTL_SECONDS },
-    );
+		// We need a Linear client both to resolve the project mapping and to
+		// emit activities. If auth is missing, we can only ack the webhook.
+		const linearClient = await createLinearClient(env, organizationId);
+		if (!linearClient) return new Response('OK', { status: 200 });
 
-    // Emit an immediate thought so Linear doesn't mark the session unresponsive
-    // while the job waits in the queue.
-    await emitInitialThought(env, organizationId, agentSessionId);
+		// Resolve the repository mapping before doing anything else. A missing
+		// mapping is a configuration error, not a retryable queue failure.
+		const repositoryName = await resolveRepositoryName(env, linearClient, payload);
+		if (!repositoryName) {
+			await emitAgentActivity(linearClient, agentSessionId, {
+				type: AgentActivityType.Error,
+				body: 'This Linear project is not mapped to an opencode repository. Add a mapping to REPO_MAP and try again.',
+			});
 
-    const message: CodingTaskMessage = {
-      action: "created",
-      agentSessionId,
-      organizationId,
-      payload,
-    };
-    await env.CODING_TASKS.send(message);
-    return new Response("OK", { status: 200 });
-  }
+			if (!isMention && issueId) {
+				await Promise.all([
+					postIssueComment(
+						linearClient,
+						issueId,
+						'Agent could not start: no opencode repository mapping found for this project.'
+					),
+					removeAgentDelegate(linearClient, issueId),
+				]);
+			}
+			return new Response('OK', { status: 200 });
+		}
 
-  if (action === "prompted") {
-    const message: CodingTaskMessage = {
-      action: "prompted",
-      agentSessionId,
-      organizationId,
-      payload,
-    };
-    await env.CODING_TASKS.send(message);
-    return new Response("OK", { status: 200 });
-  }
+		const markerKey = getSessionMarkerKey(agentSessionId);
+		const existing = await env.SESSION_STATE.get(markerKey);
+		if (existing) {
+			// Duplicate webhook — already queued.
+			return new Response('OK', { status: 200 });
+		}
 
-  return new Response("Unhandled action", { status: 200 });
+		await env.SESSION_STATE.put(
+			markerKey,
+			JSON.stringify({ kind: 'marker', queuedAt: Date.now() }),
+			{ expirationTtl: SESSION_MARKER_TTL_SECONDS }
+		);
+
+		// Emit an immediate thought so Linear doesn't mark the session unresponsive
+		// while the job waits in the queue.
+		await emitAgentActivity(linearClient, agentSessionId, {
+			type: AgentActivityType.Thought,
+			body: "Queued — I'll start working on this shortly.",
+		});
+
+		const message: CodingTaskMessage = {
+			action: 'created',
+			agentSessionId,
+			organizationId,
+			opencodeServerUrl: buildOpencodeServerUrl(env, repositoryName),
+			payload,
+		};
+		await env.CODING_TASKS.send(message);
+		return new Response('OK', { status: 200 });
+	}
+
+	if (action === 'prompted') {
+		const message: CodingTaskMessage = {
+			action: 'prompted',
+			agentSessionId,
+			organizationId,
+			payload,
+		};
+		await env.CODING_TASKS.send(message);
+		return new Response('OK', { status: 200 });
+	}
+
+	return new Response('Unhandled action', { status: 200 });
 }
 
 function getSessionMarkerKey(agentSessionId: string): string {
-  return `marker:${agentSessionId}`;
-}
-
-async function emitInitialThought(
-  env: Env,
-  organizationId: string,
-  agentSessionId: string,
-): Promise<void> {
-  const linearClient = await createLinearClient(env, organizationId);
-  if (!linearClient) return;
-
-  try {
-    await emitAgentActivity(linearClient, agentSessionId, {
-      type: AgentActivityType.Thought,
-      body: "Queued — I'll start working on this shortly.",
-    });
-  } catch {
-    // Best-effort: don't fail the webhook ack if Linear is unreachable.
-  }
+	return `marker:${agentSessionId}`;
 }

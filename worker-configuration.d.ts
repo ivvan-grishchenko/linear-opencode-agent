@@ -11,5 +11,6 @@ interface Env {
   OPENCODE_SERVER_PASSWORD: string;
   LINEAR_TOKENS: KVNamespace;
   SESSION_STATE: KVNamespace;
+  REPO_MAP: KVNamespace;
   CODING_TASKS: Queue<CodingTaskMessage>;
 }
