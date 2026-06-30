@@ -38,7 +38,7 @@ const createPayload = (issueId: string | undefined): AgentSessionEventWebhookPay
 
 describe('resolveRepositoryName', () => {
 	it('returns repositoryName from REPO_MAP keyed by fetched project id', async () => {
-		const env = createMockEnv(JSON.stringify({ repositoryName: 'my-repo' }));
+		const env = createMockEnv('my-repo');
 		const linearClient = createMockLinearClient('project-1');
 
 		const result = await resolveRepositoryName(env, linearClient, createPayload('issue-1'));
@@ -49,7 +49,7 @@ describe('resolveRepositoryName', () => {
 	});
 
 	it('returns null when issue id is missing', async () => {
-		const env = createMockEnv(JSON.stringify({ repositoryName: 'my-repo' }));
+		const env = createMockEnv('my-repo');
 		const linearClient = createMockLinearClient('project-1');
 
 		const result = await resolveRepositoryName(env, linearClient, createPayload(undefined));
@@ -60,7 +60,7 @@ describe('resolveRepositoryName', () => {
 	});
 
 	it('returns null when Linear issue fetch fails', async () => {
-		const env = createMockEnv(JSON.stringify({ repositoryName: 'my-repo' }));
+		const env = createMockEnv('my-repo');
 		const linearClient = createMockLinearClientThatThrows();
 
 		const result = await resolveRepositoryName(env, linearClient, createPayload('issue-1'));
@@ -70,7 +70,7 @@ describe('resolveRepositoryName', () => {
 	});
 
 	it('returns null when issue has no project', async () => {
-		const env = createMockEnv(JSON.stringify({ repositoryName: 'my-repo' }));
+		const env = createMockEnv('my-repo');
 		const linearClient = createMockLinearClient(null);
 
 		const result = await resolveRepositoryName(env, linearClient, createPayload('issue-1'));
@@ -81,15 +81,6 @@ describe('resolveRepositoryName', () => {
 
 	it('returns null when REPO_MAP has no entry', async () => {
 		const env = createMockEnv(null);
-		const linearClient = createMockLinearClient('project-1');
-
-		const result = await resolveRepositoryName(env, linearClient, createPayload('issue-1'));
-
-		expect(result).toBeNull();
-	});
-
-	it('returns null when mapping value is invalid json', async () => {
-		const env = createMockEnv('not-json');
 		const linearClient = createMockLinearClient('project-1');
 
 		const result = await resolveRepositoryName(env, linearClient, createPayload('issue-1'));

@@ -154,7 +154,7 @@ describe('handleAgentSessionWebhook', () => {
 	it('queues a created task and emits an initial thought', async () => {
 		const { env, get, put, repoGet, send } = createMockEnv();
 		get.mockResolvedValue(null);
-		repoGet.mockResolvedValue(JSON.stringify({ repositoryName: 'my-repo' }));
+		repoGet.mockResolvedValue('my-repo');
 
 		const linearClient = createMockLinearClient();
 		vi.mocked(createLinearClient).mockResolvedValue(linearClient);

@@ -2,16 +2,13 @@ import type { AgentSessionEventWebhookPayload, LinearClient } from '@linear/sdk'
 
 import type { Env } from '../types';
 
-export interface RepoMapping {
-	repositoryName: string;
-}
-
 /**
  * Resolve the repository name for an issue from the REPO_MAP KV namespace.
  *
- * The mapping is keyed by `repo:<organizationId>:<projectId>`. The project id
- * is fetched via the Linear client because the webhook payload does not
- * reliably include it.
+ * The mapping is keyed by `repo:<organizationId>:<projectId>` and the value
+ * is the repository name as a plain string. The project id is fetched via
+ * the Linear client because the webhook payload does not reliably include
+ * it.
  */
 export async function resolveRepositoryName(
 	env: Env,
@@ -27,14 +24,7 @@ export async function resolveRepositoryName(
 
 	const key = buildRepoMapKey(organizationId, projectId);
 	const raw = await env.REPO_MAP.get(key);
-	if (!raw) return null;
-
-	try {
-		const mapping = JSON.parse(raw) as RepoMapping;
-		return mapping.repositoryName ?? null;
-	} catch {
-		return null;
-	}
+	return raw ?? null;
 }
 
 /**

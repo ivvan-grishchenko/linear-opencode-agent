@@ -121,7 +121,7 @@ wrangler secret put OPENCODE_SERVER_PASSWORD
 | `OPENCODE_SERVER_PASSWORD` | secret | HTTP Basic Auth password shared across all opencode servers. |
 | `LINEAR_TOKENS` | KV | Stores OAuth tokens per Linear workspace. |
 | `SESSION_STATE` | KV | Session markers and session maps. |
-| `REPO_MAP` | KV | Maps `repo:<organizationId>:<projectId>` to `{ repositoryName: "..." }`. |
+| `REPO_MAP` | KV | Maps `repo:<organizationId>:<projectId>` to a repository name string. |
 | `CODING_TASKS` | Queue | Work queue for AgentSession jobs. |
 
 ## Linear OAuth setup
@@ -163,10 +163,10 @@ The Worker routes each issue to the correct repository path on the Railway servi
 
 ### Populating REPO_MAP
 
-For each Linear project, add a KV entry where the key is `repo:<organizationId>:<projectId>` and the value is JSON:
+For each Linear project, add a KV entry where the key is `repo:<organizationId>:<projectId>` and the value is the repository name as a plain string:
 
-```json
-{ "repositoryName": "my-repo" }
+```
+my-repo
 ```
 
 The `repositoryName` becomes the path segment in the Railway URL:
