@@ -1,10 +1,10 @@
-import type { AgentSessionEventWebhookPayload } from '@linear/sdk';
+import { LinearWebhookClient } from '@linear/sdk/webhooks';
 
-import type { Env } from './types';
+import type { Env, CodingTaskMessage } from './types';
 
 import { handleOAuthAuthorize, handleOAuthCallback } from './lib/oauth';
 import { processCodingTask } from './lib/queue';
-import { handleAgentSessionWebhook, verifyWebhook } from './lib/webhook';
+import { handleAgentSessionWebhook } from './lib/webhook';
 
 export default {
 	async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
@@ -26,10 +26,10 @@ export default {
 		}
 	},
 
-	async queue(batch: MessageBatch<Record<string, unknown>>, env: Env): Promise<void> {
+	async queue(batch: MessageBatch<CodingTaskMessage>, env: Env): Promise<void> {
 		for (const message of batch.messages) {
 			try {
-				await processCodingTask(message.body as unknown as CodingTaskMessage, env);
+				await processCodingTask(message.body, env);
 				message.ack();
 			} catch (err) {
 				console.error('Queue consumer failed:', err);
@@ -41,24 +41,23 @@ export default {
 };
 
 async function handleWebhook(request: Request, env: Env): Promise<Response> {
-	if (!env.LINEAR_WEBHOOK_SECRET) {
-		return new Response('LINEAR_WEBHOOK_SECRET not configured', {
-			status: 500,
-		});
-	}
-
-	let payload: AgentSessionEventWebhookPayload;
 	try {
-		payload = await verifyWebhook(request, env.LINEAR_WEBHOOK_SECRET);
-	} catch (err) {
-		console.error('Webhook verification failed:', err);
-		return new Response('Invalid signature', { status: 401 });
+		if (!env.LINEAR_WEBHOOK_SECRET) {
+			return new Response('LINEAR_WEBHOOK_SECRET not configured', {
+				status: 500,
+			});
+		}
+
+		const webhookClient = new LinearWebhookClient(env.LINEAR_WEBHOOK_SECRET);
+		const handler = webhookClient.createHandler();
+
+		handler.on('AgentSessionEvent', async (payload) => {
+			await handleAgentSessionWebhook(env, payload);
+		});
+
+		return await handler(request);
+	} catch (error) {
+		console.error('Error in webhook handler:', error);
+		return new Response('Error handling webhook', { status: 500 });
 	}
-
-	// Respond quickly; actual work happens in the queue consumer.
-	return handleAgentSessionWebhook(env, payload);
 }
-
-// Import type after use so the file compiles as a module even if env binding
-// types are not yet generated.
-import type { CodingTaskMessage } from './types';

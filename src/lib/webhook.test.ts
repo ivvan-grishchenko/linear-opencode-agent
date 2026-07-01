@@ -1,285 +1,221 @@
-import type { AgentSessionEventWebhookPayload, LinearClient } from '@linear/sdk';
+import type { AgentSessionEventWebhookPayload } from '@linear/sdk';
 import type { Mock } from 'vitest';
 
+import { LinearClient } from '@linear/sdk';
 import { AgentActivityType } from '@linear/sdk';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CodingTaskMessage, Env } from '../types';
 
-import {
-	createLinearClient,
-	emitAgentActivity,
-	postIssueComment,
-	removeAgentDelegate,
-} from './linear';
-import { handleAgentSessionWebhook, verifyWebhook } from './webhook';
+import { emitAgentActivity, postIssueComment, removeAgentDelegate } from './linear';
+import { getOAuthToken } from './oauth';
+import { handleAgentSessionWebhook } from './webhook';
 
-const SECRET = 'my-secret';
+const { mockAgent, MockOpenCodeAgent, mockMapping } = vi.hoisted(() => ({
+	mockAgent: { createSession: vi.fn() },
+	MockOpenCodeAgent: vi.fn(),
+	mockMapping: { resolveRepositoryName: vi.fn() },
+}));
 
 vi.mock('./linear', () => ({
-	createLinearClient: vi.fn(),
 	emitAgentActivity: vi.fn(),
 	postIssueComment: vi.fn(),
 	removeAgentDelegate: vi.fn(),
 }));
 
-async function signBody(body: string, secret: string): Promise<string> {
-	const encoder = new TextEncoder();
-	const key = await crypto.subtle.importKey(
-		'raw',
-		encoder.encode(secret),
-		{ name: 'HMAC', hash: 'SHA-256' },
-		false,
-		['sign']
-	);
-	const mac = await crypto.subtle.sign('HMAC', key, encoder.encode(body));
-	return Array.from(new Uint8Array(mac))
-		.map((b) => b.toString(16).padStart(2, '0'))
-		.join('');
-}
+vi.mock('./mapping', () => ({ Mapping: mockMapping }));
 
-function createWebhookRequest(body: string, signature: string, timestamp?: number): Request {
-	const timestampValue = timestamp ?? Date.now();
-	return new Request('https://worker.example.com/webhook', {
-		method: 'POST',
-		headers: {
-			'linear-signature': signature,
-			'linear-timestamp': String(timestampValue),
-			'Content-Type': 'application/json',
-		},
-		body,
-	});
-}
+vi.mock('./oauth', () => ({
+	getOAuthToken: vi.fn(),
+}));
 
-const createMockLinearClient = (projectId: string | null = 'project-1'): LinearClient =>
-	({
-		issue: vi.fn().mockResolvedValue({ projectId }),
-	}) as unknown as LinearClient;
+vi.mock('./opencode', () => ({
+	OpenCodeAgent: MockOpenCodeAgent,
+}));
 
-const createMockEnv = (): {
+interface MockEnv {
 	env: Env;
 	get: Mock<(key: string) => Promise<string | null>>;
 	put: Mock<(key: string, value: string) => Promise<void>>;
-	repoGet: Mock<(key: string) => Promise<string | null>>;
 	send: Mock<(body: CodingTaskMessage) => Promise<void>>;
-} => {
+}
+
+const createMockEnv = (): MockEnv => {
 	const get = vi.fn<(key: string) => Promise<string | null>>();
 	const put = vi.fn<(key: string, value: string) => Promise<void>>();
-	const repoGet = vi.fn<(key: string) => Promise<string | null>>();
 	const send = vi.fn<(body: CodingTaskMessage) => Promise<void>>();
 	const env = {
 		OPENCODE_SERVER_URL: 'https://opencode.example.com',
 		SESSION_STATE: { get, put } as unknown as KVNamespace,
-		REPO_MAP: { get: repoGet } as unknown as KVNamespace,
 		CODING_TASKS: { send } as unknown as Queue<CodingTaskMessage>,
 	} as Env;
-	return { env, get, put, repoGet, send };
+	return { env, get, put, send };
 };
 
-describe('verifyWebhook', () => {
-	it('returns payload for a valid webhook', async () => {
-		const payload = {
-			action: 'created',
-			agentSession: { id: 'session-1' } as never,
-			organizationId: 'org-1',
-		} as unknown as AgentSessionEventWebhookPayload;
-		const body = JSON.stringify(payload);
-		const signature = await signBody(body, SECRET);
-		const request = createWebhookRequest(body, signature);
+const createPayload = (
+	action: 'created' | 'prompted',
+	overrides: Partial<AgentSessionEventWebhookPayload> = {}
+): AgentSessionEventWebhookPayload =>
+	({
+		action,
+		agentSession: { id: 'session-1', issueId: 'issue-1' } as never,
+		organizationId: 'org-1',
+		...overrides,
+	}) as AgentSessionEventWebhookPayload;
 
-		const result = await verifyWebhook(request, SECRET);
-		expect(result.agentSession.id).toBe('session-1');
-	});
+const resolvedMapping = (repositoryName = 'my-org/my-repo') => ({
+	repositoryName,
+	issue: { id: 'issue-1', title: 'Fix the bug' } as never,
+});
 
-	it('rejects an invalid signature', async () => {
-		const request = createWebhookRequest('{}', 'bad-signature');
-		await expect(verifyWebhook(request, SECRET)).rejects.toThrow('Invalid webhook signature');
+beforeEach(() => {
+	vi.clearAllMocks();
+	MockOpenCodeAgent.mockImplementation(function () {
+		return mockAgent;
 	});
-
-	it('rejects a missing timestamp', async () => {
-		const body = JSON.stringify({ action: 'created', agentSession: { id: 's1' } });
-		const signature = await signBody(body, SECRET);
-		const request = new Request('https://worker.example.com/webhook', {
-			method: 'POST',
-			headers: { 'linear-signature': signature },
-			body,
-		});
-		await expect(verifyWebhook(request, SECRET)).rejects.toThrow('Invalid webhook timestamp');
-	});
-
-	it('rejects an outdated timestamp', async () => {
-		const body = JSON.stringify({ action: 'created', agentSession: { id: 's1' } });
-		const signature = await signBody(body, SECRET);
-		const request = createWebhookRequest(body, signature, Date.now() - 5 * 60 * 1000);
-		await expect(verifyWebhook(request, SECRET)).rejects.toThrow('Webhook timestamp too old');
-	});
-
-	it('uses webhookTimestamp from payload when present', async () => {
-		const body = JSON.stringify({
-			action: 'created',
-			agentSession: { id: 's1' },
-			webhookTimestamp: Date.now(),
-		});
-		const signature = await signBody(body, SECRET);
-		const request = createWebhookRequest(body, signature, Date.now() - 5 * 60 * 1000);
-		const result = await verifyWebhook(request, SECRET);
-		expect(result.agentSession.id).toBe('s1');
-	});
+	vi.mocked(emitAgentActivity).mockResolvedValue(undefined);
+	vi.mocked(postIssueComment).mockResolvedValue(undefined);
+	vi.mocked(removeAgentDelegate).mockResolvedValue(undefined);
+	vi.mocked(getOAuthToken).mockResolvedValue('linear-token');
+	mockMapping.resolveRepositoryName.mockResolvedValue(resolvedMapping() as never);
+	mockAgent.createSession.mockResolvedValue({ id: 'opencode-session-1' } as never);
 });
 
 describe('handleAgentSessionWebhook', () => {
-	beforeEach(() => {
-		vi.clearAllMocks();
-	});
-
-	it('deduplicates created webhooks using session marker', async () => {
+	it('returns early when the webhook marker already exists', async () => {
 		const { env, get, send } = createMockEnv();
-		get.mockResolvedValue('{"kind":"marker"}');
-		vi.mocked(createLinearClient).mockResolvedValue(createMockLinearClient());
+		get.mockImplementation((key) => Promise.resolve(key === 'webhook:session-1' ? 'marker' : null));
 
-		const payload: AgentSessionEventWebhookPayload = {
-			action: 'created',
-			agentSession: {
-				id: 'session-1',
-				issue: { id: 'issue-1' } as never,
-			} as never,
-			organizationId: 'org-1',
-		} as never;
-		const response = await handleAgentSessionWebhook(env, payload);
+		await handleAgentSessionWebhook(env, createPayload('created'));
 
-		expect(response.status).toBe(200);
+		expect(getOAuthToken).not.toHaveBeenCalled();
 		expect(send).not.toHaveBeenCalled();
 	});
 
-	it('queues a created task and emits an initial thought', async () => {
-		const { env, get, put, repoGet, send } = createMockEnv();
+	it('returns early when no linear oauth token is stored', async () => {
+		const { env, get, send } = createMockEnv();
 		get.mockResolvedValue(null);
-		repoGet.mockResolvedValue('my-repo');
+		vi.mocked(getOAuthToken).mockResolvedValue(null);
 
-		const linearClient = createMockLinearClient();
-		vi.mocked(createLinearClient).mockResolvedValue(linearClient);
-		vi.mocked(emitAgentActivity).mockResolvedValue(undefined);
+		await handleAgentSessionWebhook(env, createPayload('created'));
 
-		const payload: AgentSessionEventWebhookPayload = {
-			action: 'created',
-			agentSession: {
-				id: 'session-1',
-				issue: { id: 'issue-1' } as never,
-			} as never,
-			organizationId: 'org-1',
-		} as never;
-		const response = await handleAgentSessionWebhook(env, payload);
+		expect(emitAgentActivity).not.toHaveBeenCalled();
+		expect(send).not.toHaveBeenCalled();
+	});
 
-		expect(response.status).toBe(200);
+	it('writes the webhook marker before doing any other work', async () => {
+		const { env, get, put } = createMockEnv();
+		get.mockResolvedValue(null);
+		vi.mocked(getOAuthToken).mockResolvedValue(null);
+
+		await handleAgentSessionWebhook(env, createPayload('created'));
+
 		expect(put).toHaveBeenCalledWith(
-			'marker:session-1',
+			'webhook:session-1',
 			expect.stringContaining('marker'),
 			expect.objectContaining({ expirationTtl: expect.any(Number) })
 		);
-		expect(emitAgentActivity).toHaveBeenCalledWith(
-			linearClient,
-			'session-1',
-			expect.objectContaining({
-				type: AgentActivityType.Thought,
-				body: expect.stringContaining('Queued'),
-			})
-		);
-		expect(send).toHaveBeenCalledWith(
-			expect.objectContaining({
-				action: 'created',
-				agentSessionId: 'session-1',
-				organizationId: 'org-1',
-				opencodeServerUrl: 'https://opencode.example.com/my-repo/',
-			})
-		);
 	});
 
-	it('returns 200 without enqueueing when linear client cannot be created', async () => {
-		const { env, get, put, send } = createMockEnv();
+	it('aborts with an error activity when repo mapping is missing', async () => {
+		const { env, get, send } = createMockEnv();
 		get.mockResolvedValue(null);
-		vi.mocked(createLinearClient).mockResolvedValue(null);
+		mockMapping.resolveRepositoryName.mockResolvedValue(null);
 
-		const payload: AgentSessionEventWebhookPayload = {
-			action: 'created',
-			agentSession: {
-				id: 'session-1',
-				issue: { id: 'issue-1' } as never,
-			} as never,
-			organizationId: 'org-1',
-		} as never;
-		const response = await handleAgentSessionWebhook(env, payload);
+		await handleAgentSessionWebhook(env, createPayload('created'));
 
-		expect(response.status).toBe(200);
-		expect(send).not.toHaveBeenCalled();
-		expect(put).not.toHaveBeenCalled();
-		expect(emitAgentActivity).not.toHaveBeenCalled();
-	});
-
-	it('aborts created delegation when repo mapping is missing', async () => {
-		const { env, get, put, repoGet, send } = createMockEnv();
-		get.mockResolvedValue(null);
-		repoGet.mockResolvedValue(null);
-
-		const linearClient = createMockLinearClient();
-		vi.mocked(createLinearClient).mockResolvedValue(linearClient);
-		vi.mocked(emitAgentActivity).mockResolvedValue(undefined);
-		vi.mocked(postIssueComment).mockResolvedValue(undefined);
-		vi.mocked(removeAgentDelegate).mockResolvedValue(undefined);
-
-		const payload: AgentSessionEventWebhookPayload = {
-			action: 'created',
-			agentSession: {
-				id: 'session-1',
-				issue: { id: 'issue-1' } as never,
-			} as never,
-			organizationId: 'org-1',
-		} as never;
-		const response = await handleAgentSessionWebhook(env, payload);
-
-		expect(response.status).toBe(200);
-		expect(put).not.toHaveBeenCalled();
-		expect(send).not.toHaveBeenCalled();
 		expect(emitAgentActivity).toHaveBeenCalledWith(
-			linearClient,
+			expect.any(LinearClient),
 			'session-1',
 			expect.objectContaining({
 				type: AgentActivityType.Error,
 				body: expect.stringContaining('not mapped'),
 			})
 		);
-		expect(postIssueComment).toHaveBeenCalled();
-		expect(removeAgentDelegate).toHaveBeenCalled();
+		expect(postIssueComment).toHaveBeenCalledWith(
+			expect.any(LinearClient),
+			'issue-1',
+			expect.any(String)
+		);
+		expect(removeAgentDelegate).toHaveBeenCalledWith(expect.any(LinearClient), 'issue-1');
+		expect(send).not.toHaveBeenCalled();
 	});
 
-	it('queues a prompted task', async () => {
-		const { env, send } = createMockEnv();
+	it('does not post a comment or remove delegate when issueId is missing', async () => {
+		const { env, get, send } = createMockEnv();
+		get.mockResolvedValue(null);
+		mockMapping.resolveRepositoryName.mockResolvedValue(null);
 
-		const payload: AgentSessionEventWebhookPayload = {
-			action: 'prompted',
-			agentSession: { id: 'session-1' } as never,
-			organizationId: 'org-1',
-		} as never;
-		const response = await handleAgentSessionWebhook(env, payload);
+		await handleAgentSessionWebhook(
+			env,
+			createPayload('created', { agentSession: { id: 'session-1' } as never })
+		);
 
-		expect(response.status).toBe(200);
+		expect(emitAgentActivity).toHaveBeenCalledWith(
+			expect.any(LinearClient),
+			'session-1',
+			expect.objectContaining({ type: AgentActivityType.Error })
+		);
+		expect(postIssueComment).not.toHaveBeenCalled();
+		expect(removeAgentDelegate).not.toHaveBeenCalled();
+		expect(send).not.toHaveBeenCalled();
+	});
+
+	it('creates an opencode session and queues a coding task', async () => {
+		const { env, get, put, send } = createMockEnv();
+		get.mockResolvedValue(null);
+		const expectedBaseUrl = 'https://opencode.example.com/my-org/my-repo';
+
+		await handleAgentSessionWebhook(env, createPayload('created'));
+
+		expect(MockOpenCodeAgent).toHaveBeenCalledWith(env, expectedBaseUrl);
+		expect(mockAgent.createSession).toHaveBeenCalledWith('Fix the bug');
+		expect(put).toHaveBeenCalledWith('session-1', 'opencode-session-1');
 		expect(send).toHaveBeenCalledWith(
 			expect.objectContaining({
-				action: 'prompted',
+				action: 'created',
 				agentSessionId: 'session-1',
 				organizationId: 'org-1',
+				issueId: 'issue-1',
+				openCodeBaseUrl: expectedBaseUrl,
+				openCodeSessionId: 'opencode-session-1',
 			})
 		);
 	});
 
-	it('returns 200 for unknown actions', async () => {
-		const { env } = createMockEnv();
-		const payload = {
-			action: 'deleted',
-			agentSession: { id: 'session-1' } as never,
-			organizationId: 'org-1',
-		} as unknown as AgentSessionEventWebhookPayload;
-		const response = await handleAgentSessionWebhook(env, payload);
-		expect(response.status).toBe(200);
-		expect(await response.text()).toBe('Unhandled action');
+	it('reuses a stored opencode session id without creating a new one', async () => {
+		const { env, get, send } = createMockEnv();
+		get.mockImplementation((key) => {
+			if (key === 'webhook:session-1') return Promise.resolve(null);
+			if (key === 'session-1') return Promise.resolve('existing-session');
+			return Promise.resolve(null);
+		});
+
+		await handleAgentSessionWebhook(env, createPayload('prompted'));
+
+		expect(mockAgent.createSession).not.toHaveBeenCalled();
+		expect(send).toHaveBeenCalledWith(
+			expect.objectContaining({
+				action: 'prompted',
+				openCodeSessionId: 'existing-session',
+			})
+		);
+	});
+
+	it('emits resolved and queued thoughts on the happy path', async () => {
+		const { env, get } = createMockEnv();
+		get.mockResolvedValue(null);
+
+		await handleAgentSessionWebhook(env, createPayload('created'));
+
+		const thoughtBodies = vi
+			.mocked(emitAgentActivity)
+			.mock.calls.map((call) => call[2])
+			.filter((content) => content?.type === AgentActivityType.Thought)
+			.map((content) => (content as { body: string }).body);
+
+		expect(thoughtBodies).toContain('Resolved repository name');
+		expect(thoughtBodies).toContain('Created OpenCode session');
+		expect(thoughtBodies.some((body) => body.includes('Queued'))).toBe(true);
 	});
 });

@@ -1,77 +1,43 @@
-import type { AgentSessionEventWebhookPayload, LinearClient } from '@linear/sdk';
-import type { OpencodeClient, Part } from '@opencode-ai/sdk';
+import type { Part } from '@opencode-ai/sdk';
 
+import { type AgentSessionEventWebhookPayload, LinearClient } from '@linear/sdk';
 import { AgentActivityType } from '@linear/sdk';
 
 import type { CodingTaskMessage, Env, OpenSpecParseResult } from '../types';
 
-import {
-	createLinearClient,
-	emitAgentActivity,
-	postIssueComment,
-	removeAgentDelegate,
-	updateSessionExternalUrl,
-} from './linear';
-import {
-	createOpencodeClient,
-	createOpencodeSession,
-	getOpencodeSession,
-	listOpencodeSessionMessages,
-	promptOpencodeSessionAsync,
-} from './opencode';
+import { extractSessionId } from './events';
+import { abortDelegation, emitAgentActivity, updateSessionExternalUrl } from './linear';
+import { getOAuthToken } from './oauth';
+import { OpenCodeAgent } from './opencode';
 import { buildDelegationPrompt, buildMentionPrompt, MENTION_READ_ONLY_TOOLS } from './prompts';
 import { translatePart } from './translator';
-import { Utils } from './utils';
 
-const POLL_INTERVAL_MS = 5000;
-const OPENCODE_CONNECT_RETRIES = 2;
-const OPENCODE_RETRY_DELAY_MS = 5000;
 const SESSION_MAP_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
 
 /**
  * Process one queue message. This is the long-running orchestrator.
  */
 export async function processCodingTask(message: CodingTaskMessage, env: Env): Promise<void> {
-	const { action, agentSessionId, organizationId, payload } = message;
+	console.log('Started processing task');
 
-	const linearClient = await createLinearClient(env, organizationId);
-	if (!linearClient) {
-		// OAuth token missing or expired. Nothing we can do in the queue.
-		console.error(`No Linear token for workspace ${organizationId}`);
+	const { agentSessionId, openCodeBaseUrl } = message;
+
+	const token = await getOAuthToken(env, message.organizationId);
+
+	if (!token) {
+		console.error('Linear OAuth token not found');
 		return;
 	}
 
-	switch (action) {
-		case 'created': {
-			await handleCreatedTask(
-				env,
-				linearClient,
-				agentSessionId,
-				message.opencodeServerUrl,
-				payload
-			);
-			break;
-		}
-		case 'prompted': {
-			await handlePromptedTask(env, linearClient, agentSessionId, payload);
-			break;
-		}
-	}
-}
-
-async function handleCreatedTask(
-	env: Env,
-	linearClient: LinearClient,
-	agentSessionId: string,
-	opencodeServerUrl: string | undefined,
-	payload: AgentSessionEventWebhookPayload
-): Promise<void> {
-	const issueId = payload.agentSession.issue?.id;
-	const isMention = Boolean(payload.agentSession.comment);
+	const linearClient = new LinearClient({ accessToken: token });
+	await emitAgentActivity(linearClient, message.agentSessionId, {
+		type: AgentActivityType.Thought,
+		body: 'Picked up a task from queue',
+	});
 
 	// Deduplicate at consumer level too (covers KV race / stale messages).
-	const mapKey = getSessionMapKey(agentSessionId);
-	const existingMap = await env.SESSION_STATE.get(mapKey);
+	const queueKey = `queue:${agentSessionId}`;
+	const existingMap = await env.SESSION_STATE.get(queueKey);
 	if (existingMap) {
 		await emitAgentActivity(linearClient, agentSessionId, {
 			type: AgentActivityType.Thought,
@@ -80,7 +46,9 @@ async function handleCreatedTask(
 		return;
 	}
 
-	if (!opencodeServerUrl) {
+	await env.SESSION_STATE.put(queueKey, agentSessionId, { expirationTtl: SESSION_MAP_TTL_SECONDS });
+
+	if (!openCodeBaseUrl) {
 		await emitAgentActivity(linearClient, agentSessionId, {
 			type: AgentActivityType.Error,
 			body: 'Missing opencode server URL in queue message. This is an internal error.',
@@ -88,205 +56,194 @@ async function handleCreatedTask(
 		return;
 	}
 
-	const opencodeClient = createOpencodeClient(env, opencodeServerUrl);
-
-	// For delegation, verify the OpenSpec change marker and directory first.
-	let prompt: string;
-	let tools: Record<string, boolean> | undefined;
-	if (isMention) {
-		prompt = buildMentionPrompt(payload);
-		tools = MENTION_READ_ONLY_TOOLS;
-	} else {
-		const openSpecResult = await parseOpenSpecChange(payload);
-		if (!openSpecResult.ok) {
-			await abortDelegation(linearClient, agentSessionId, issueId, openSpecResult.message);
-			return;
-		}
-		prompt = buildDelegationPrompt(payload, openSpecResult.change);
-	}
-
-	// Create the opencode session and persist the mapping.
-	const opencodeSessionId = await Utils.runWithRetry(
-		() => createOpencodeSession(opencodeClient, `linear-${agentSessionId}`),
-		OPENCODE_CONNECT_RETRIES,
-		OPENCODE_RETRY_DELAY_MS
-	);
-
-	await env.SESSION_STATE.put(
-		mapKey,
-		JSON.stringify({
-			kind: 'map',
-			opencodeSessionId,
-			opencodeServerUrl,
-			createdAt: Date.now(),
-		}),
-		{ expirationTtl: SESSION_MAP_TTL_SECONDS }
-	);
-
-	await emitAgentActivity(linearClient, agentSessionId, {
-		type: AgentActivityType.Thought,
-		body: isMention ? 'Looking into your question...' : 'Starting implementation...',
-	});
-
-	await Utils.runWithRetry(
-		() =>
-			promptOpencodeSessionAsync(opencodeClient, opencodeSessionId, prompt, {
-				tools,
-			}),
-		OPENCODE_CONNECT_RETRIES,
-		OPENCODE_RETRY_DELAY_MS
-	);
-
-	await pollAndTranslate(linearClient, opencodeClient, agentSessionId, opencodeSessionId);
-}
-
-async function handlePromptedTask(
-	env: Env,
-	linearClient: LinearClient,
-	agentSessionId: string,
-	payload: AgentSessionEventWebhookPayload
-): Promise<void> {
-	const mapKey = getSessionMapKey(agentSessionId);
-	const rawMap = await env.SESSION_STATE.get(mapKey);
-	if (!rawMap) {
+	const opencodeSessionId = await env.SESSION_STATE.get(agentSessionId);
+	if (!opencodeSessionId) {
+		console.error('Unable to retrieve open code session id');
 		await emitAgentActivity(linearClient, agentSessionId, {
 			type: AgentActivityType.Error,
-			body: 'Could not find an existing opencode session for this conversation.',
+			body: 'Unable to retrieve open code session id.',
 		});
 		return;
 	}
 
-	const map = JSON.parse(rawMap) as {
-		opencodeSessionId: string;
-		opencodeServerUrl: string;
-	};
+	switch (message.action) {
+		case 'created': {
+			await handleCreatedTask(env, message, linearClient, opencodeSessionId);
+			break;
+		}
+		case 'prompted': {
+			await handlePromptedTask(env, message, linearClient, opencodeSessionId);
+			break;
+		}
+	}
+}
 
-	const opencodeClient = createOpencodeClient(env, map.opencodeServerUrl);
-	const followUp = extractFollowUp(payload);
-	const isMention = Boolean(payload.agentSession.comment);
+async function handleCreatedTask(
+	env: Env,
+	{ agentSessionId, openCodeBaseUrl, payload, issueId }: CodingTaskMessage,
+	linearClient: LinearClient,
+	opencodeSessionId: string
+): Promise<void> {
+	// For delegation, verify the OpenSpec change marker and directory first.
+	const openSpecResult = await parseOpenSpecChange(payload);
+	if (!openSpecResult.ok) {
+		await abortDelegation(linearClient, agentSessionId, issueId, openSpecResult.message);
+		return;
+	}
+	const agent = new OpenCodeAgent(env, openCodeBaseUrl);
+	const prompt = buildDelegationPrompt(payload, openSpecResult.change);
 
 	await emitAgentActivity(linearClient, agentSessionId, {
 		type: AgentActivityType.Thought,
-		body: 'Resuming session with your follow-up...',
+		body: 'Built the prompt. Starting implementation...',
 	});
 
-	await Utils.runWithRetry(
-		() =>
-			promptOpencodeSessionAsync(
-				opencodeClient,
-				map.opencodeSessionId,
-				followUp,
-				isMention ? { tools: MENTION_READ_ONLY_TOOLS } : {}
-			),
-		OPENCODE_CONNECT_RETRIES,
-		OPENCODE_RETRY_DELAY_MS
-	);
+	await agent.promptAsync(opencodeSessionId, prompt);
+	await emitAgentActivity(linearClient, agentSessionId, {
+		type: AgentActivityType.Thought,
+		body: 'Prompted the model asynchronously',
+	});
 
-	await pollAndTranslate(linearClient, opencodeClient, agentSessionId, map.opencodeSessionId);
+	await pollAndTranslate(agent, linearClient, agentSessionId, opencodeSessionId, { linkPr: true });
+}
+
+async function handlePromptedTask(
+	env: Env,
+	{ agentSessionId, openCodeBaseUrl, payload }: CodingTaskMessage,
+	linearClient: LinearClient,
+	openCodeSessionId: string
+): Promise<void> {
+	const agent = new OpenCodeAgent(env, openCodeBaseUrl);
+	const prompt = buildMentionPrompt(payload);
+
+	await emitAgentActivity(linearClient, agentSessionId, {
+		type: AgentActivityType.Thought,
+		body: 'Starting to process the question',
+	});
+
+	await agent.promptAsync(openCodeSessionId, prompt, MENTION_READ_ONLY_TOOLS);
+
+	await pollAndTranslate(agent, linearClient, agentSessionId, openCodeSessionId, { linkPr: false });
 }
 
 /**
- * Poll the opencode session for new messages, translate parts to Linear
- * activities, and stop when the session is no longer running.
+ * Poll the opencode session for new events, translate parts to Linear
+ * activities, and stop when the session finishes.
+ *
+ * Text parts are deferred to session completion (emitFinalText) to avoid
+ * emitting the final answer twice — once as a streaming Thought and again
+ * as the final Response. Non-text parts (reasoning, tool calls, patches,
+ * step events) are emitted in real time as progress activities.
  */
+interface PollOptions {
+	/** Whether to extract a PR URL from the final response and link it to the AgentSession. */
+	linkPr: boolean;
+}
+
 async function pollAndTranslate(
+	agent: OpenCodeAgent,
 	linearClient: LinearClient,
-	opencodeClient: OpencodeClient,
 	agentSessionId: string,
-	opencodeSessionId: string
+	opencodeSessionId: string,
+	options: PollOptions
 ): Promise<void> {
-	let lastSeenMessageId: string | null = null;
-	let lastSeenPartId: string | null = null;
+	const events = await agent.getEventsStream();
+	const emitted = new Set<string>();
 
-	while (true) {
-		await Utils.sleep(POLL_INTERVAL_MS);
+	for await (const event of events) {
+		const eventSessionId = extractSessionId(event);
+		if (eventSessionId !== undefined && eventSessionId !== opencodeSessionId) continue;
 
-		let session;
-		try {
-			session = await getOpencodeSession(opencodeClient, opencodeSessionId);
-		} catch (err) {
-			console.error('Failed to fetch opencode session status:', err);
-			continue;
-		}
+		switch (event.type) {
+			case 'message.part.updated': {
+				const part = event.properties.part;
 
-		let messages;
-		try {
-			messages = await listOpencodeSessionMessages(opencodeClient, opencodeSessionId);
-		} catch (err) {
-			console.error('Failed to fetch opencode messages:', err);
-			continue;
-		}
+				if (part.type === 'text') break;
 
-		const isComplete = isSessionComplete(session);
+				if (part.type === 'tool' && part.state.status === 'running') break;
 
-		for (const message of messages) {
-			// Skip messages already seen in full.
-			const isSeenInFull =
-				!!lastSeenMessageId &&
-				message.info.id !== lastSeenMessageId &&
-				!isNewerMessage(message.info.id, lastSeenMessageId, messages);
-			if (isSeenInFull) continue;
+				const key = part.type === 'tool' ? `${part.id}:${part.state.status}` : part.id;
+				if (emitted.has(key)) break;
+				emitted.add(key);
 
-			for (const part of message.parts) {
-				if (lastSeenPartId && part.id <= lastSeenPartId) continue;
+				const content = translatePart(part, { isFinal: false });
+				if (content) await emitAgentActivity(linearClient, agentSessionId, content);
 
-				const activity = translatePart(part, { isFinal: isComplete });
-				if (activity) await emitAgentActivity(linearClient, agentSessionId, activity);
-
-				lastSeenPartId = part.id;
+				break;
 			}
 
-			lastSeenMessageId = message.info.id;
-		}
+			case 'session.idle': {
+				const isFinished = await agent.isSessionFinished(opencodeSessionId);
+				if (isFinished) {
+					await emitFinalText(agent, linearClient, agentSessionId, opencodeSessionId, options);
+					return;
+				}
+				break;
+			}
 
-		if (isComplete) {
-			const finalText = findFinalText(messages);
-			const prUrl = extractPrUrl(finalText);
-			if (prUrl) await updateSessionExternalUrl(linearClient, agentSessionId, prUrl);
-
-			return;
-		}
-	}
-}
-
-function isSessionComplete(session: unknown): boolean {
-	// Defensive: the opencode session object shape may vary. Treat any status
-	// that isn't explicitly "running" as complete.
-	if (!session || typeof session !== 'object') return true;
-	const status = (session as { status?: { type?: string } }).status;
-	if (!status) return true;
-	return status.type !== 'running' && status.type !== 'busy';
-}
-
-function isNewerMessage(
-	candidateId: string,
-	referenceId: string,
-	messages: { info: { id: string } }[]
-): boolean {
-	const ids = messages.map((m) => m.info.id);
-	const candidateIndex = ids.indexOf(candidateId);
-	const referenceIndex = ids.indexOf(referenceId);
-	if (candidateIndex === -1 || referenceIndex === -1) return false;
-	return candidateIndex > referenceIndex;
-}
-
-function findFinalText(messages: { info: { id: string }; parts: Part[] }[]): string {
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const message = messages[i];
-		if (!message) continue;
-		for (let j = message.parts.length - 1; j >= 0; j--) {
-			const part = message.parts[j];
-			if (part && part.type === 'text') {
-				return part.text;
+			case 'session.error': {
+				const errorProp = event.properties.error;
+				await emitAgentActivity(linearClient, agentSessionId, {
+					type: AgentActivityType.Error,
+					body: formatSessionError(errorProp),
+				});
+				break;
 			}
 		}
 	}
-	return '';
+}
+
+/**
+ * Emit the assistant's text parts from the completed session.
+ * The last text part becomes a Response (the final answer); earlier text
+ * parts become Thoughts (interim narration).
+ */
+async function emitFinalText(
+	agent: OpenCodeAgent,
+	linearClient: LinearClient,
+	agentSessionId: string,
+	opencodeSessionId: string,
+	options: PollOptions
+): Promise<void> {
+	const messages = await agent.getMessages(opencodeSessionId);
+
+	const textParts: Part[] = [];
+	for (const { info, parts } of messages) {
+		if (info.role !== 'assistant') continue;
+		for (const part of parts) {
+			if (part.type === 'text') textParts.push(part);
+		}
+	}
+
+	for (let i = 0; i < textParts.length; i++) {
+		const isFinal = i === textParts.length - 1;
+		const content = translatePart(textParts[i], { isFinal });
+		if (content) await emitAgentActivity(linearClient, agentSessionId, content);
+	}
+
+	if (options.linkPr) {
+		const finalPart = textParts.at(-1) as { text: string } | undefined;
+		const prUrl = extractPrUrl(finalPart?.text ?? '');
+		if (prUrl) await updateSessionExternalUrl(linearClient, agentSessionId, prUrl);
+	}
 }
 
 function extractPrUrl(text: string): string | null {
 	const match = text.match(/https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/\d+/);
 	return match?.[0] ?? null;
+}
+
+/**
+ * Format a session error into a human-readable string.
+ * All opencode error variants share a `name` and `data` property; most have
+ * `data.message`, while `MessageOutputLengthError` uses an open record.
+ */
+function formatSessionError(
+	error: { name: string; data: { message?: string } } | undefined
+): string {
+	if (!error) return 'Session encountered an unknown error';
+	const message = typeof error.data?.message === 'string' ? error.data.message : error.name;
+	return `Session error: ${message}`;
 }
 
 async function parseOpenSpecChange(
@@ -310,40 +267,4 @@ async function parseOpenSpecChange(
 	};
 
 	return { ok: true, change };
-}
-
-function extractFollowUp(payload: AgentSessionEventWebhookPayload): string {
-	const content = (payload as { agentActivity?: { content?: unknown } }).agentActivity?.content;
-	if (content && typeof content === 'object' && 'body' in content) {
-		const body = (content as { body?: unknown }).body;
-		return typeof body === 'string' ? body : '';
-	}
-	return '';
-}
-
-async function abortDelegation(
-	linearClient: LinearClient,
-	agentSessionId: string,
-	issueId: string | undefined,
-	message: string
-): Promise<void> {
-	await emitAgentActivity(linearClient, agentSessionId, {
-		type: AgentActivityType.Error,
-		body: message,
-	});
-
-	if (!issueId) return;
-
-	try {
-		await Promise.all([
-			postIssueComment(linearClient, issueId, `Agent could not start: ${message}`),
-			removeAgentDelegate(linearClient, issueId),
-		]);
-	} catch (err) {
-		console.error('Failed to clean up issue after abort:', err);
-	}
-}
-
-function getSessionMapKey(agentSessionId: string): string {
-	return `map:${agentSessionId}`;
 }

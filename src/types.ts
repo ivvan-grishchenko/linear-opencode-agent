@@ -35,8 +35,12 @@ export interface CodingTaskMessage {
 	agentSessionId: string;
 	/** The Linear organization/workspace ID. */
 	organizationId: string;
-	/** Resolved base URL of the opencode server for this issue's repository (set for 'created'). */
-	opencodeServerUrl?: string;
+	/** The Linear issue ID. */
+	issueId: string;
+	/** Resolved open code session id for agent session. */
+	openCodeSessionId: string;
+	/** Resolve open code base url including the correct repository path */
+	openCodeBaseUrl: string;
 	/** The full webhook payload (serialized). */
 	payload:
 		| AgentSessionEventWebhookPayload

@@ -1,82 +1,14 @@
-import type { AgentSessionEventWebhookPayload } from '@linear/sdk';
-
+import { type AgentSessionEventWebhookPayload, LinearClient } from '@linear/sdk';
 import { AgentActivityType } from '@linear/sdk';
 
 import type { CodingTaskMessage, Env } from '../types';
 
-import {
-	createLinearClient,
-	emitAgentActivity,
-	postIssueComment,
-	removeAgentDelegate,
-} from './linear';
-import { buildOpencodeServerUrl, resolveRepositoryName } from './repo-mapping';
+import { emitAgentActivity, postIssueComment, removeAgentDelegate } from './linear';
+import { Mapping } from './mapping';
+import { getOAuthToken } from './oauth';
+import { OpenCodeAgent } from './opencode';
 
 const SESSION_MARKER_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
-const WEBHOOK_TIMESTAMP_TOLERANCE_MS = 60 * 1000;
-
-/**
- * Verify a Linear webhook request and return the parsed payload.
- *
- * Uses the Web Crypto API instead of @linear/sdk/webhooks because the SDK's
- * webhook client depends on Node's `crypto` and `Buffer`, which are not
- * available in Cloudflare Workers.
- */
-export async function verifyWebhook(
-	request: Request,
-	secret: string
-): Promise<AgentSessionEventWebhookPayload> {
-	const signature = request.headers.get('linear-signature') ?? '';
-	const timestampHeader = request.headers.get('linear-timestamp');
-
-	const rawBody = await request.arrayBuffer();
-	const isValid = await verifyLinearSignature(secret, new Uint8Array(rawBody), signature);
-	if (!isValid) {
-		throw new Error('Invalid webhook signature');
-	}
-
-	const payload = JSON.parse(
-		new TextDecoder().decode(rawBody)
-	) as AgentSessionEventWebhookPayload & { webhookTimestamp?: number };
-
-	const timestamp =
-		payload.webhookTimestamp ?? (timestampHeader ? parseInt(timestampHeader, 10) : NaN);
-	if (Number.isNaN(timestamp)) throw new Error('Invalid webhook timestamp');
-
-	if (Math.abs(Date.now() - timestamp) > WEBHOOK_TIMESTAMP_TOLERANCE_MS)
-		throw new Error('Webhook timestamp too old');
-
-	return payload;
-}
-
-async function verifyLinearSignature(
-	secret: string,
-	body: Uint8Array,
-	signature: string
-): Promise<boolean> {
-	if (!signature) return false;
-
-	const encoder = new TextEncoder();
-	const key = await crypto.subtle.importKey(
-		'raw',
-		encoder.encode(secret),
-		{ name: 'HMAC', hash: 'SHA-256' },
-		false,
-		['sign']
-	);
-	const mac = await crypto.subtle.sign('HMAC', key, body);
-	const expectedHex = Array.from(new Uint8Array(mac))
-		.map((b) => b.toString(16).padStart(2, '0'))
-		.join('');
-
-	// Constant-time hex comparison.
-	if (expectedHex.length !== signature.length) return false;
-	let diff = 0;
-	for (let i = 0; i < expectedHex.length; i++) {
-		diff |= expectedHex.charCodeAt(i) ^ signature.charCodeAt(i);
-	}
-	return diff === 0;
-}
 
 /**
  * Handle an incoming AgentSessionEvent webhook.
@@ -86,87 +18,101 @@ async function verifyLinearSignature(
 export async function handleAgentSessionWebhook(
 	env: Env,
 	payload: AgentSessionEventWebhookPayload
-): Promise<Response> {
-	const action = payload.action;
+): Promise<void> {
+	console.log('Handling payload', payload);
+
 	const agentSessionId = payload.agentSession.id;
-	const organizationId = payload.organizationId;
+	const issueId = payload.agentSession.issueId;
 
-	if (action === 'created') {
-		const issueId = payload.agentSession.issue?.id;
-		const isMention = Boolean(payload.agentSession.comment);
+	const webhookKey = `webhook:${agentSessionId}`;
+	const existingWebhook = await env.SESSION_STATE.get(webhookKey);
 
-		// We need a Linear client both to resolve the project mapping and to
-		// emit activities. If auth is missing, we can only ack the webhook.
-		const linearClient = await createLinearClient(env, organizationId);
-		if (!linearClient) return new Response('OK', { status: 200 });
+	if (existingWebhook) return;
 
-		// Resolve the repository mapping before doing anything else. A missing
-		// mapping is a configuration error, not a retryable queue failure.
-		const repositoryName = await resolveRepositoryName(env, linearClient, payload);
-		if (!repositoryName) {
-			await emitAgentActivity(linearClient, agentSessionId, {
-				type: AgentActivityType.Error,
-				body: 'This Linear project is not mapped to an opencode repository. Add a mapping to REPO_MAP and try again.',
-			});
+	await env.SESSION_STATE.put(
+		webhookKey,
+		JSON.stringify({ kind: 'marker', queuedAt: Date.now() }),
+		{ expirationTtl: SESSION_MARKER_TTL_SECONDS }
+	);
 
-			if (!isMention && issueId) {
-				await Promise.all([
-					postIssueComment(
-						linearClient,
-						issueId,
-						'Agent could not start: no opencode repository mapping found for this project.'
-					),
-					removeAgentDelegate(linearClient, issueId),
-				]);
-			}
-			return new Response('OK', { status: 200 });
-		}
+	const token = await getOAuthToken(env, payload.organizationId);
 
-		const markerKey = getSessionMarkerKey(agentSessionId);
-		const existing = await env.SESSION_STATE.get(markerKey);
-		if (existing) {
-			// Duplicate webhook — already queued.
-			return new Response('OK', { status: 200 });
-		}
+	if (!token) {
+		console.error('Linear OAuth token not found');
+		return;
+	}
 
-		await env.SESSION_STATE.put(
-			markerKey,
-			JSON.stringify({ kind: 'marker', queuedAt: Date.now() }),
-			{ expirationTtl: SESSION_MARKER_TTL_SECONDS }
-		);
+	const linearClient = new LinearClient({ accessToken: token });
+	const resolveResponse = await Mapping.resolveRepositoryName(env, linearClient, payload);
 
-		// Emit an immediate thought so Linear doesn't mark the session unresponsive
-		// while the job waits in the queue.
+	if (!resolveResponse) {
+		console.error('Unable to resolve repository name');
+
 		await emitAgentActivity(linearClient, agentSessionId, {
-			type: AgentActivityType.Thought,
-			body: "Queued — I'll start working on this shortly.",
+			type: AgentActivityType.Error,
+			body: 'This Linear project is not mapped to an opencode repository. Add a mapping to REPO_MAP and try again.',
 		});
 
-		const message: CodingTaskMessage = {
-			action: 'created',
-			agentSessionId,
-			organizationId,
-			opencodeServerUrl: buildOpencodeServerUrl(env, repositoryName),
-			payload,
-		};
-		await env.CODING_TASKS.send(message);
-		return new Response('OK', { status: 200 });
+		if (issueId) {
+			await Promise.all([
+				postIssueComment(
+					linearClient,
+					issueId,
+					'Agent could not start: no opencode repository mapping found for this project.'
+				),
+				removeAgentDelegate(linearClient, issueId),
+			]);
+		}
+
+		return;
 	}
 
-	if (action === 'prompted') {
-		const message: CodingTaskMessage = {
-			action: 'prompted',
-			agentSessionId,
-			organizationId,
-			payload,
-		};
-		await env.CODING_TASKS.send(message);
-		return new Response('OK', { status: 200 });
-	}
+	await emitAgentActivity(linearClient, agentSessionId, {
+		type: AgentActivityType.Thought,
+		body: 'Resolved repository name',
+	});
 
-	return new Response('Unhandled action', { status: 200 });
+	const { repositoryName, issue } = resolveResponse;
+	const agentBaseUrl = `${env.OPENCODE_SERVER_URL}/${repositoryName}`;
+	const agent = new OpenCodeAgent(env, agentBaseUrl);
+
+	const openCodeSessionId = await getOpenCodeSessionId(env, payload, issue.title, agent);
+	await emitAgentActivity(linearClient, agentSessionId, {
+		type: AgentActivityType.Thought,
+		body: 'Created OpenCode session',
+	});
+
+	const task: CodingTaskMessage = {
+		action: payload.action === 'created' ? 'created' : 'prompted',
+		agentSessionId,
+		organizationId: payload.organizationId,
+		issueId: issue.id,
+		payload,
+		openCodeBaseUrl: agentBaseUrl,
+		openCodeSessionId,
+	};
+
+	await env.CODING_TASKS.send(task);
+	await emitAgentActivity(linearClient, agentSessionId, {
+		type: AgentActivityType.Thought,
+		body: "Queued — I'll start working on this shortly.",
+	});
 }
 
-function getSessionMarkerKey(agentSessionId: string): string {
-	return `marker:${agentSessionId}`;
+async function getOpenCodeSessionId(
+	env: Env,
+	payload: AgentSessionEventWebhookPayload,
+	title: string,
+	agent: OpenCodeAgent
+): Promise<string> {
+	const agentSessionId = payload.agentSession.id;
+	const raw = await env.SESSION_STATE.get(agentSessionId);
+
+	if (raw) return raw;
+
+	const session = await agent.createSession(title);
+
+	await env.SESSION_STATE.put(agentSessionId, session.id);
+
+	return session.id;
 }

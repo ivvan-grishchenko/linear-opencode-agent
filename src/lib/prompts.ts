@@ -35,7 +35,7 @@ The spec above, in the issue description, is the source of truth.
 3. Implement the change following the spec.
 4. Run tests / typecheck / lint as appropriate for this repo.
 5. Commit your changes with a clear message referencing ${identifier}.
-6. Push and open a PR:
+6. Push and open a PR (follow the conventional commits guidelines:
    \`gh pr create --title "feat: ${change.name}" --body "Implements ${change.name}. Closes ${identifier}."\`
 7. Report the PR URL in your final response.
 

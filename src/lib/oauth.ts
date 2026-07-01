@@ -6,7 +6,7 @@ import { getStoredToken, getWorkspaceTokenKey, setStoredToken } from './linear';
 
 const SCOPES = 'read,write,app:assignable,app:mentionable';
 
-export function handleOAuthAuthorize(request: Request, env: Env): Response {
+function handleOAuthAuthorize(request: Request, env: Env): Response {
 	const url = new URL(request.url);
 	const state = url.searchParams.get('state') ?? '';
 
@@ -25,7 +25,7 @@ export function handleOAuthAuthorize(request: Request, env: Env): Response {
 	});
 }
 
-export async function handleOAuthCallback(request: Request, env: Env): Promise<Response> {
+async function handleOAuthCallback(request: Request, env: Env): Promise<Response> {
 	const url = new URL(request.url);
 	const code = url.searchParams.get('code');
 	const error = url.searchParams.get('error');
@@ -79,7 +79,7 @@ export async function handleOAuthCallback(request: Request, env: Env): Promise<R
 	);
 }
 
-export async function getOAuthToken(env: Env, workspaceId: string): Promise<string | null> {
+async function getOAuthToken(env: Env, workspaceId: string): Promise<string | null> {
 	const tokenData = await getStoredToken(env, workspaceId);
 	if (!tokenData) return null;
 
@@ -151,4 +151,4 @@ function escapeHtml(value: string): string {
 		.replace(/'/g, '&#39;');
 }
 
-export { getWorkspaceTokenKey };
+export { handleOAuthAuthorize, handleOAuthCallback, getOAuthToken, getWorkspaceTokenKey };

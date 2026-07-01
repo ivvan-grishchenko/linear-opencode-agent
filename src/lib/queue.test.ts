@@ -1,44 +1,41 @@
 import type { AgentSessionEventWebhookPayload } from '@linear/sdk';
-import type { Part } from '@opencode-ai/sdk';
+import type { Event, Part } from '@opencode-ai/sdk';
 import type { Mock } from 'vitest';
 
+import { LinearClient } from '@linear/sdk';
 import { AgentActivityType } from '@linear/sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CodingTaskMessage, Env, OpenSpecChange } from '../types';
 
-import {
-	createLinearClient,
-	emitAgentActivity,
-	postIssueComment,
-	removeAgentDelegate,
-	updateSessionExternalUrl,
-} from './linear';
-import {
-	createOpencodeClient,
-	createOpencodeSession,
-	getOpencodeSession,
-	listOpencodeSessionMessages,
-	promptOpencodeSessionAsync,
-} from './opencode';
+import { abortDelegation, emitAgentActivity, updateSessionExternalUrl } from './linear';
+import { getOAuthToken } from './oauth';
 import { buildDelegationPrompt, buildMentionPrompt, MENTION_READ_ONLY_TOOLS } from './prompts';
 import { processCodingTask } from './queue';
 import { translatePart } from './translator';
 
+const { mockAgent, MockOpenCodeAgent } = vi.hoisted(() => ({
+	mockAgent: {
+		getEventsStream: vi.fn(),
+		isSessionFinished: vi.fn(),
+		promptAsync: vi.fn(),
+		getMessages: vi.fn(),
+	},
+	MockOpenCodeAgent: vi.fn(),
+}));
+
+vi.mock('./oauth', () => ({
+	getOAuthToken: vi.fn(),
+}));
+
 vi.mock('./linear', () => ({
-	createLinearClient: vi.fn(),
+	abortDelegation: vi.fn(),
 	emitAgentActivity: vi.fn(),
-	postIssueComment: vi.fn(),
-	removeAgentDelegate: vi.fn(),
 	updateSessionExternalUrl: vi.fn(),
 }));
 
 vi.mock('./opencode', () => ({
-	createOpencodeClient: vi.fn(),
-	createOpencodeSession: vi.fn(),
-	getOpencodeSession: vi.fn(),
-	listOpencodeSessionMessages: vi.fn(),
-	promptOpencodeSessionAsync: vi.fn(),
+	OpenCodeAgent: MockOpenCodeAgent,
 }));
 
 vi.mock('./prompts', () => ({
@@ -55,25 +52,15 @@ interface MockEnv {
 	env: Env;
 	get: Mock<(key: string) => Promise<string | null>>;
 	put: Mock<(key: string, value: string) => Promise<void>>;
-	send: Mock<(body: CodingTaskMessage) => Promise<void>>;
 }
 
 const createMockEnv = (): MockEnv => {
 	const get = vi.fn<(key: string) => Promise<string | null>>();
 	const put = vi.fn<(key: string, value: string) => Promise<void>>();
-	const send = vi.fn<(body: CodingTaskMessage) => Promise<void>>();
 	const env = {
-		OPENCODE_SERVER_URL: 'https://opencode.example.com',
-		OPENCODE_SERVER_PASSWORD: 'secret',
 		SESSION_STATE: { get, put } as unknown as KVNamespace,
-		REPO_MAP: {} as unknown as KVNamespace,
-		CODING_TASKS: { send } as unknown as Queue<CodingTaskMessage>,
 	} as Env;
-	return { env, get, put, send };
-};
-
-const createMockOpencodeClient = () => {
-	return {} as unknown as ReturnType<typeof createOpencodeClient>;
+	return { env, get, put };
 };
 
 const createBasePayload = (
@@ -99,27 +86,81 @@ const createMessage = (
 		action,
 		agentSessionId: 'session-1',
 		organizationId: 'org-1',
-		opencodeServerUrl: 'https://opencode.example.com/my-repo/',
+		issueId: 'issue-1',
+		openCodeSessionId: 'opencode-session-1',
+		openCodeBaseUrl: 'https://opencode.example.com/my-repo/',
 		payload: createBasePayload(action),
 		...overrides,
 	}) as CodingTaskMessage;
 
-const linearClient = { id: 'linear-client' } as never;
+const idleEvent = (sessionID: string): Event =>
+	({ type: 'session.idle', properties: { sessionID } }) as Event;
+
+const partUpdatedEvent = (part: Part): Event =>
+	({ type: 'message.part.updated', properties: { part } }) as Event;
+
+const sessionErrorEvent = (
+	sessionID: string,
+	error?: { name: string; data: { message?: string } }
+): Event => ({ type: 'session.error', properties: { sessionID, error } }) as Event;
+
+const toolPart = (
+	id: string,
+	status: 'pending' | 'running' | 'completed' | 'error' = 'completed'
+): Part =>
+	({
+		id,
+		sessionID: 'opencode-session-1',
+		messageID: 'm1',
+		type: 'tool',
+		tool: 'read',
+		callID: 'c1',
+		state: { status, input: { path: 'foo.ts' } },
+	}) as unknown as Part;
+
+const textPart = (id: string, text: string): Part =>
+	({
+		id,
+		sessionID: 'opencode-session-1',
+		messageID: 'm1',
+		type: 'text',
+		text,
+	}) as unknown as Part;
+
+const eventStream = (events: Event[]): AsyncGenerator<Event> =>
+	(async function* () {
+		for (const e of events) yield e;
+	})();
+
+const delegationPayload = () =>
+	createBasePayload('created', {
+		agentSession: {
+			id: 'session-1',
+			issue: {
+				id: 'issue-1',
+				identifier: 'ENG-1',
+				title: 'Issue',
+				description: '<!-- openspec-change: feat-1 -->',
+			} as never,
+		} as never,
+	});
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	vi.useFakeTimers({ shouldAdvanceTime: true });
-	vi.mocked(createLinearClient).mockResolvedValue(linearClient);
-	vi.mocked(createOpencodeClient).mockReturnValue(createMockOpencodeClient());
-	vi.mocked(createOpencodeSession).mockResolvedValue('opencode-session-1');
-	vi.mocked(promptOpencodeSessionAsync).mockResolvedValue(undefined);
-	vi.mocked(getOpencodeSession).mockResolvedValue({ status: { type: 'completed' } } as never);
-	vi.mocked(listOpencodeSessionMessages).mockResolvedValue([]);
+	MockOpenCodeAgent.mockImplementation(function () {
+		return mockAgent;
+	});
+	vi.mocked(getOAuthToken).mockResolvedValue('linear-token');
 	vi.mocked(emitAgentActivity).mockResolvedValue(undefined);
+	vi.mocked(abortDelegation).mockResolvedValue(undefined);
 	vi.mocked(updateSessionExternalUrl).mockResolvedValue(undefined);
-	vi.mocked(postIssueComment).mockResolvedValue(undefined);
-	vi.mocked(removeAgentDelegate).mockResolvedValue(undefined);
+	vi.mocked(buildDelegationPrompt).mockReturnValue('delegation prompt');
+	vi.mocked(buildMentionPrompt).mockReturnValue('mention prompt');
 	vi.mocked(translatePart).mockReturnValue(null);
+	mockAgent.promptAsync.mockResolvedValue(undefined);
+	mockAgent.isSessionFinished.mockResolvedValue(true);
+	mockAgent.getMessages.mockResolvedValue([]);
+	mockAgent.getEventsStream.mockResolvedValue(eventStream([idleEvent('opencode-session-1')]));
 });
 
 afterEach(() => {
@@ -131,39 +172,22 @@ describe('processCodingTask', () => {
 
 	beforeEach(() => {
 		mockEnv = createMockEnv();
+		const { get } = mockEnv;
+		get.mockImplementation((key: string) => {
+			if (key === 'queue:session-1') return Promise.resolve(null);
+			if (key === 'session-1') return Promise.resolve('opencode-session-1');
+			return Promise.resolve(null);
+		});
 	});
 
 	it('returns early when no linear token exists', async () => {
 		const { env } = mockEnv;
-		vi.mocked(createLinearClient).mockResolvedValue(null);
+		vi.mocked(getOAuthToken).mockResolvedValue(null);
 
 		await processCodingTask(createMessage('created'), env);
 
-		expect(createOpencodeClient).not.toHaveBeenCalled();
-	});
-
-	it('handles a mention created flow', async () => {
-		const { env, put } = mockEnv;
-		const payload = createBasePayload('created', {
-			agentSession: { id: 'session-1', comment: { body: 'Hi', id: 'comment-1' } as never } as never,
-		});
-
-		const taskPromise = processCodingTask(createMessage('created', { payload }), env);
-		await vi.advanceTimersByTimeAsync(6000);
-		await taskPromise;
-
-		expect(buildMentionPrompt).toHaveBeenCalledWith(payload);
-		expect(promptOpencodeSessionAsync).toHaveBeenCalledWith(
-			expect.anything(),
-			'opencode-session-1',
-			'mention prompt',
-			{ tools: MENTION_READ_ONLY_TOOLS }
-		);
-		expect(put).toHaveBeenCalledWith(
-			'map:session-1',
-			expect.stringContaining('https://opencode.example.com/my-repo/'),
-			expect.anything()
-		);
+		expect(MockOpenCodeAgent).not.toHaveBeenCalled();
+		expect(emitAgentActivity).not.toHaveBeenCalled();
 	});
 
 	it('aborts delegation when openspec marker is missing', async () => {
@@ -172,17 +196,14 @@ describe('processCodingTask', () => {
 
 		await processCodingTask(createMessage('created', { payload }), env);
 
-		expect(emitAgentActivity).toHaveBeenCalledWith(
-			linearClient,
+		expect(abortDelegation).toHaveBeenCalledWith(
+			expect.any(LinearClient),
 			'session-1',
-			expect.objectContaining({
-				type: AgentActivityType.Error,
-				body: expect.stringContaining('No'),
-			})
+			'issue-1',
+			expect.stringContaining('No')
 		);
-		expect(postIssueComment).toHaveBeenCalled();
-		expect(removeAgentDelegate).toHaveBeenCalled();
-		expect(createOpencodeSession).not.toHaveBeenCalled();
+		expect(MockOpenCodeAgent).not.toHaveBeenCalled();
+		expect(mockAgent.promptAsync).not.toHaveBeenCalled();
 	});
 
 	it('runs delegation flow when openspec change is valid', async () => {
@@ -198,12 +219,8 @@ describe('processCodingTask', () => {
 				} as never,
 			} as never,
 		});
-		const client = createMockOpencodeClient();
-		vi.mocked(createOpencodeClient).mockReturnValue(client);
 
-		const taskPromise = processCodingTask(createMessage('created', { payload }), env);
-		await vi.advanceTimersByTimeAsync(6000);
-		await taskPromise;
+		await processCodingTask(createMessage('created', { payload }), env);
 
 		const expectedChange: OpenSpecChange = {
 			name: 'feat-1',
@@ -211,89 +228,371 @@ describe('processCodingTask', () => {
 			directoryPath: 'openspec/changes/feat-1',
 		};
 		expect(buildDelegationPrompt).toHaveBeenCalledWith(payload, expectedChange);
-		expect(createOpencodeSession).toHaveBeenCalled();
-		expect(promptOpencodeSessionAsync).toHaveBeenCalledWith(
-			expect.anything(),
-			'opencode-session-1',
-			'delegation prompt',
-			{}
-		);
+		expect(MockOpenCodeAgent).toHaveBeenCalledWith(env, 'https://opencode.example.com/my-repo/');
+		expect(mockAgent.promptAsync).toHaveBeenCalledWith('opencode-session-1', 'delegation prompt');
+		expect(mockAgent.getEventsStream).toHaveBeenCalled();
 	});
 
-	it('emits an error when prompted without a session map', async () => {
+	it('emits an error when prompted without a stored opencode session id', async () => {
 		const { env, get } = mockEnv;
-		get.mockResolvedValue(null);
+		get.mockImplementation((key: string) => {
+			if (key === 'queue:session-1') return Promise.resolve(null);
+			return Promise.resolve(null);
+		});
 
 		await processCodingTask(createMessage('prompted'), env);
 
 		expect(emitAgentActivity).toHaveBeenCalledWith(
-			linearClient,
+			expect.any(LinearClient),
 			'session-1',
 			expect.objectContaining({
 				type: AgentActivityType.Error,
-				body: expect.stringContaining('Could not find'),
+				body: expect.stringContaining('open code session id'),
 			})
 		);
-		expect(promptOpencodeSessionAsync).not.toHaveBeenCalled();
+		expect(mockAgent.promptAsync).not.toHaveBeenCalled();
 	});
 
-	it('resumes a prompted session from the map', async () => {
-		const { env, get } = mockEnv;
-		get.mockResolvedValue(
-			JSON.stringify({
-				kind: 'map',
-				opencodeSessionId: 'existing-session',
-				opencodeServerUrl: 'https://opencode.example.com/my-repo/',
+	it('emits an error when openCodeBaseUrl is missing', async () => {
+		const { env } = mockEnv;
+
+		await processCodingTask(createMessage('created', { openCodeBaseUrl: '' }), env);
+
+		expect(emitAgentActivity).toHaveBeenCalledWith(
+			expect.any(LinearClient),
+			'session-1',
+			expect.objectContaining({
+				type: AgentActivityType.Error,
+				body: expect.stringContaining('opencode server URL'),
 			})
 		);
+		expect(MockOpenCodeAgent).not.toHaveBeenCalled();
+	});
 
+	it('resumes a prompted session using the stored opencode session id', async () => {
+		const { env, get } = mockEnv;
+		get.mockImplementation((key: string) => {
+			if (key === 'queue:session-1') return Promise.resolve(null);
+			if (key === 'session-1') return Promise.resolve('existing-session');
+			return Promise.resolve(null);
+		});
 		const payload = createBasePayload('prompted', {
 			agentActivity: { content: { body: 'Follow up' } } as never,
 		});
 
-		const taskPromise = processCodingTask(createMessage('prompted', { payload }), env);
-		await vi.advanceTimersByTimeAsync(6000);
-		await taskPromise;
+		await processCodingTask(createMessage('prompted', { payload }), env);
 
-		expect(promptOpencodeSessionAsync).toHaveBeenCalledWith(
-			expect.anything(),
+		expect(buildMentionPrompt).toHaveBeenCalledWith(payload);
+		expect(mockAgent.promptAsync).toHaveBeenCalledWith(
 			'existing-session',
-			'Follow up',
-			{}
+			'mention prompt',
+			MENTION_READ_ONLY_TOOLS
 		);
+		expect(mockAgent.getEventsStream).toHaveBeenCalled();
 	});
 
-	it('emits translated parts during polling', async () => {
+	it('skips as a duplicate when the queue marker already exists', async () => {
+		const { env, get } = mockEnv;
+		get.mockImplementation((key: string) => {
+			if (key === 'queue:session-1') return Promise.resolve('session-1');
+			return Promise.resolve(null);
+		});
+
+		await processCodingTask(createMessage('created'), env);
+
+		expect(emitAgentActivity).toHaveBeenCalledWith(
+			expect.any(LinearClient),
+			'session-1',
+			expect.objectContaining({
+				type: AgentActivityType.Thought,
+				body: expect.stringContaining('duplicate'),
+			})
+		);
+		expect(MockOpenCodeAgent).not.toHaveBeenCalled();
+	});
+
+	it('skips stream events that belong to a foreign opencode session', async () => {
 		const { env } = mockEnv;
+		mockAgent.getEventsStream.mockResolvedValue(
+			eventStream([idleEvent('foreign-session'), idleEvent('opencode-session-1')])
+		);
+		mockAgent.isSessionFinished.mockResolvedValue(true);
+
 		const payload = createBasePayload('created', {
 			agentSession: {
 				id: 'session-1',
-				comment: { body: 'Hi', id: 'comment-1' } as never,
+				issue: {
+					id: 'issue-1',
+					identifier: 'ENG-1',
+					title: 'Issue',
+					description: '<!-- openspec-change: feat-1 -->',
+				} as never,
 			} as never,
 		});
 
+		await processCodingTask(createMessage('created', { payload }), env);
+
+		expect(mockAgent.isSessionFinished).toHaveBeenCalledTimes(1);
+		expect(mockAgent.isSessionFinished).toHaveBeenCalledWith('opencode-session-1');
+	});
+
+	it('keeps polling when a matching session.idle is not finished', async () => {
+		const { env } = mockEnv;
+		mockAgent.getEventsStream.mockResolvedValue(eventStream([idleEvent('opencode-session-1')]));
+		mockAgent.isSessionFinished.mockResolvedValue(false);
+
+		await processCodingTask(createMessage('created', { payload: delegationPayload() }), env);
+
+		expect(mockAgent.isSessionFinished).toHaveBeenCalledWith('opencode-session-1');
+	});
+
+	it('emits translated activity for non-text parts during streaming', async () => {
+		const { env } = mockEnv;
+		const translated = { type: AgentActivityType.Action, action: 'read', parameter: 'foo.ts' };
+		vi.mocked(translatePart).mockReturnValue(translated as never);
+		mockAgent.getEventsStream.mockResolvedValue(
+			eventStream([partUpdatedEvent(toolPart('p1', 'completed')), idleEvent('opencode-session-1')])
+		);
+		mockAgent.isSessionFinished.mockResolvedValue(false);
+
+		await processCodingTask(createMessage('created', { payload: delegationPayload() }), env);
+
+		expect(translatePart).toHaveBeenCalledWith(
+			expect.objectContaining({ id: 'p1', type: 'tool' }),
+			{ isFinal: false }
+		);
+		expect(emitAgentActivity).toHaveBeenCalledWith(
+			expect.any(LinearClient),
+			'session-1',
+			translated
+		);
+	});
+
+	it('skips text parts during streaming', async () => {
+		const { env } = mockEnv;
+		mockAgent.getEventsStream.mockResolvedValue(
+			eventStream([
+				partUpdatedEvent(textPart('p1', 'interim text')),
+				idleEvent('opencode-session-1'),
+			])
+		);
+		mockAgent.isSessionFinished.mockResolvedValue(false);
+
+		await processCodingTask(createMessage('created', { payload: delegationPayload() }), env);
+
+		expect(translatePart).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'text' }), {
+			isFinal: false,
+		});
+	});
+
+	it('skips tool running state to avoid duplicate with pending', async () => {
+		const { env } = mockEnv;
 		vi.mocked(translatePart).mockReturnValue({
-			type: AgentActivityType.Response,
-			body: 'Done',
+			type: AgentActivityType.Action,
+			action: 'read',
+			parameter: 'foo.ts',
 		} as never);
-		vi.mocked(listOpencodeSessionMessages).mockResolvedValue([
+		mockAgent.getEventsStream.mockResolvedValue(
+			eventStream([partUpdatedEvent(toolPart('p1', 'running')), idleEvent('opencode-session-1')])
+		);
+		mockAgent.isSessionFinished.mockResolvedValue(false);
+
+		await processCodingTask(createMessage('created', { payload: delegationPayload() }), env);
+
+		expect(translatePart).not.toHaveBeenCalled();
+	});
+
+	it('deduplicates repeated part updates with same id and status', async () => {
+		const { env } = mockEnv;
+		vi.mocked(translatePart).mockReturnValue({
+			type: AgentActivityType.Action,
+			action: 'read',
+			parameter: 'foo.ts',
+		} as never);
+		const part = toolPart('p1', 'completed');
+		mockAgent.getEventsStream.mockResolvedValue(
+			eventStream([partUpdatedEvent(part), partUpdatedEvent(part), idleEvent('opencode-session-1')])
+		);
+		mockAgent.isSessionFinished.mockResolvedValue(false);
+
+		await processCodingTask(createMessage('created', { payload: delegationPayload() }), env);
+
+		const actionCalls = vi
+			.mocked(emitAgentActivity)
+			.mock.calls.filter((call) => call[2]?.type === AgentActivityType.Action);
+		expect(actionCalls).toHaveLength(1);
+	});
+
+	it('emits final text as Response on session completion', async () => {
+		const { env } = mockEnv;
+		const finalText = textPart('p9', 'Done. PR created at https://github.com/org/repo/pull/42');
+		mockAgent.getMessages.mockResolvedValue([
 			{
-				info: { id: 'm1' },
-				parts: [{ id: 'p1', type: 'text', text: 'Done' } as unknown as Part],
+				info: {
+					id: 'm1',
+					role: 'assistant',
+					sessionID: 'opencode-session-1',
+					time: { created: 1, completed: 2 },
+				} as never,
+				parts: [finalText],
 			},
 		] as never);
+		vi.mocked(translatePart).mockImplementation((part, context) => {
+			if (part.type === 'text' && context.isFinal) {
+				return { type: AgentActivityType.Response, body: part.text } as never;
+			}
+			return null;
+		});
+		mockAgent.getEventsStream.mockResolvedValue(eventStream([idleEvent('opencode-session-1')]));
+		mockAgent.isSessionFinished.mockResolvedValue(true);
 
-		const taskPromise = processCodingTask(createMessage('created', { payload }), env);
-		await vi.advanceTimersByTimeAsync(6000);
-		await taskPromise;
+		await processCodingTask(createMessage('created', { payload: delegationPayload() }), env);
 
+		expect(translatePart).toHaveBeenCalledWith(finalText, { isFinal: true });
 		expect(emitAgentActivity).toHaveBeenCalledWith(
-			linearClient,
+			expect.any(LinearClient),
 			'session-1',
 			expect.objectContaining({
 				type: AgentActivityType.Response,
-				body: 'Done',
+				body: 'Done. PR created at https://github.com/org/repo/pull/42',
 			})
+		);
+		expect(updateSessionExternalUrl).toHaveBeenCalledWith(
+			expect.any(LinearClient),
+			'session-1',
+			'https://github.com/org/repo/pull/42'
+		);
+	});
+
+	it('does not link a PR for mention flows', async () => {
+		const { env } = mockEnv;
+		const finalText = textPart('p9', 'Done. PR created at https://github.com/org/repo/pull/42');
+		mockAgent.getMessages.mockResolvedValue([
+			{
+				info: {
+					id: 'm1',
+					role: 'assistant',
+					sessionID: 'opencode-session-1',
+					time: { created: 1, completed: 2 },
+				} as never,
+				parts: [finalText],
+			},
+		] as never);
+		vi.mocked(translatePart).mockImplementation((part, context) => {
+			if (part.type === 'text' && context.isFinal) {
+				return { type: AgentActivityType.Response, body: part.text } as never;
+			}
+			return null;
+		});
+		mockAgent.getEventsStream.mockResolvedValue(eventStream([idleEvent('opencode-session-1')]));
+		mockAgent.isSessionFinished.mockResolvedValue(true);
+
+		await processCodingTask(createMessage('prompted'), env);
+
+		expect(updateSessionExternalUrl).not.toHaveBeenCalled();
+	});
+
+	it('emits earlier text parts as Thoughts and last as Response', async () => {
+		const { env } = mockEnv;
+		const firstText = textPart('p1', 'Let me check the file');
+		const lastText = textPart('p2', 'Fixed it. PR at https://example.com/pr/1');
+		mockAgent.getMessages.mockResolvedValue([
+			{
+				info: {
+					id: 'm1',
+					role: 'assistant',
+					sessionID: 'opencode-session-1',
+					time: { created: 1, completed: 2 },
+				} as never,
+				parts: [firstText, lastText],
+			},
+		] as never);
+		vi.mocked(translatePart).mockImplementation((part, context) => {
+			if (part.type === 'text') {
+				return context.isFinal
+					? ({ type: AgentActivityType.Response, body: part.text } as never)
+					: ({ type: AgentActivityType.Thought, body: part.text } as never);
+			}
+			return null;
+		});
+		mockAgent.getEventsStream.mockResolvedValue(eventStream([idleEvent('opencode-session-1')]));
+		mockAgent.isSessionFinished.mockResolvedValue(true);
+
+		await processCodingTask(createMessage('created', { payload: delegationPayload() }), env);
+
+		expect(translatePart).toHaveBeenCalledWith(firstText, { isFinal: false });
+		expect(translatePart).toHaveBeenCalledWith(lastText, { isFinal: true });
+	});
+
+	it('emits error activity on session.error', async () => {
+		const { env } = mockEnv;
+		mockAgent.getEventsStream.mockResolvedValue(
+			eventStream([
+				sessionErrorEvent('opencode-session-1', {
+					name: 'ProviderAuthError',
+					data: { message: 'Invalid API key' },
+				}),
+				idleEvent('opencode-session-1'),
+			])
+		);
+		mockAgent.isSessionFinished.mockResolvedValue(true);
+		mockAgent.getMessages.mockResolvedValue([]);
+
+		await processCodingTask(createMessage('created', { payload: delegationPayload() }), env);
+
+		expect(emitAgentActivity).toHaveBeenCalledWith(
+			expect.any(LinearClient),
+			'session-1',
+			expect.objectContaining({
+				type: AgentActivityType.Error,
+				body: expect.stringContaining('Invalid API key'),
+			})
+		);
+	});
+
+	it('emits generic error message when session.error has no error detail', async () => {
+		const { env } = mockEnv;
+		mockAgent.getEventsStream.mockResolvedValue(
+			eventStream([
+				sessionErrorEvent('opencode-session-1', undefined),
+				idleEvent('opencode-session-1'),
+			])
+		);
+		mockAgent.isSessionFinished.mockResolvedValue(true);
+		mockAgent.getMessages.mockResolvedValue([]);
+
+		await processCodingTask(createMessage('created', { payload: delegationPayload() }), env);
+
+		expect(emitAgentActivity).toHaveBeenCalledWith(
+			expect.any(LinearClient),
+			'session-1',
+			expect.objectContaining({
+				type: AgentActivityType.Error,
+				body: expect.stringContaining('unknown error'),
+			})
+		);
+	});
+
+	it('ignores session.error from a foreign session', async () => {
+		const { env } = mockEnv;
+		mockAgent.getEventsStream.mockResolvedValue(
+			eventStream([
+				sessionErrorEvent('foreign-session', {
+					name: 'ApiError',
+					data: { message: 'should be skipped' },
+				}),
+				idleEvent('opencode-session-1'),
+			])
+		);
+		mockAgent.isSessionFinished.mockResolvedValue(true);
+		mockAgent.getMessages.mockResolvedValue([]);
+
+		await processCodingTask(createMessage('created', { payload: delegationPayload() }), env);
+
+		expect(emitAgentActivity).not.toHaveBeenCalledWith(
+			expect.any(LinearClient),
+			'session-1',
+			expect.objectContaining({ body: expect.stringContaining('should be skipped') })
 		);
 	});
 });

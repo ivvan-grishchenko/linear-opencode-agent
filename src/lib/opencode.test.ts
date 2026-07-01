@@ -1,16 +1,10 @@
-import type { OpencodeClient } from '@opencode-ai/sdk';
+import type { OpencodeClient, Session } from '@opencode-ai/sdk';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Env } from '../types';
 
-import {
-	createOpencodeClient,
-	createOpencodeSession,
-	getOpencodeSession,
-	listOpencodeSessionMessages,
-	promptOpencodeSessionAsync,
-} from './opencode';
+import { OpenCodeAgent } from './opencode';
 
 const { createSdkClient } = vi.hoisted(() => ({ createSdkClient: vi.fn() }));
 
@@ -35,141 +29,186 @@ const createMockClient = () =>
 		},
 	}) as unknown as OpencodeClient;
 
-describe('createOpencodeClient', () => {
-	let mockClient: OpencodeClient;
-	let env: Env;
+const baseUrl = 'https://opencode.example.com/my-repo/';
 
-	beforeEach(() => {
-		mockClient = createMockClient();
-		env = createMockEnv();
-	});
+describe('OpenCodeAgent', () => {
+	describe('constructor', () => {
+		let mockClient: OpencodeClient;
+		let env: Env;
 
-	it('creates a client with the provided base url and wrapped fetch', async () => {
-		createSdkClient.mockReturnValue(mockClient);
+		beforeEach(() => {
+			OpenCodeAgent.reset();
+			vi.clearAllMocks();
+			mockClient = createMockClient();
+			env = createMockEnv();
+		});
 
-		const client = createOpencodeClient(env, 'https://opencode.example.com/my-repo/');
+		it('creates an SDK client with the provided base url and wrapped fetch', () => {
+			createSdkClient.mockReturnValue(mockClient);
 
-		expect(createSdkClient).toHaveBeenCalledWith(
-			expect.objectContaining({
-				baseUrl: 'https://opencode.example.com/my-repo/',
-				fetch: expect.any(Function),
-			})
-		);
-		expect(client).toBe(mockClient);
-	});
+			// oxlint-disable-next-line no-new
+			new OpenCodeAgent(env, baseUrl);
 
-	it('adds basic auth header to every outgoing request', async () => {
-		createSdkClient.mockReturnValue(mockClient);
-		const mockGlobalFetch = vi.fn().mockResolvedValue(new Response());
-		globalThis.fetch = mockGlobalFetch;
+			expect(createSdkClient).toHaveBeenCalledWith(
+				expect.objectContaining({
+					baseUrl,
+					fetch: expect.any(Function),
+				})
+			);
+		});
 
-		createOpencodeClient(env, 'https://opencode.example.com/my-repo/');
-		const wrappedFetch = createSdkClient.mock.calls[0][0].fetch;
+		it('returns the same instance for the same base url', () => {
+			createSdkClient.mockReturnValue(mockClient);
 
-		const mockRequest = {
-			url: 'https://opencode.example.com/my-repo/session',
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-		};
+			const first = new OpenCodeAgent(env, baseUrl);
+			const second = new OpenCodeAgent(env, baseUrl);
 
-		await wrappedFetch(mockRequest);
+			expect(second).toBe(first);
+			expect(createSdkClient).toHaveBeenCalledTimes(1);
+		});
 
-		expect(mockGlobalFetch).toHaveBeenCalledWith(
-			'https://opencode.example.com/my-repo/session',
-			expect.objectContaining({
+		it('creates separate instances for different base urls', () => {
+			createSdkClient.mockReturnValue(mockClient);
+
+			const first = new OpenCodeAgent(env, baseUrl);
+			const second = new OpenCodeAgent(env, 'https://opencode.example.com/other-repo/');
+
+			expect(second).not.toBe(first);
+			expect(createSdkClient).toHaveBeenCalledTimes(2);
+		});
+
+		it('adds basic auth header to every outgoing request', async () => {
+			createSdkClient.mockReturnValue(mockClient);
+			const mockGlobalFetch = vi.fn().mockResolvedValue(new Response());
+			globalThis.fetch = mockGlobalFetch;
+
+			// oxlint-disable-next-line no-new
+			new OpenCodeAgent(env, baseUrl);
+			const wrappedFetch = createSdkClient.mock.calls[0][0].fetch;
+
+			const request = {
+				url: `${baseUrl}session`,
 				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					Authorization: `Basic ${Buffer.from('opencode:secret').toString('base64')}`,
-				},
-			})
-		);
-	});
-});
+				headers: { 'Content-Type': 'application/json' },
+			};
 
-describe('createOpencodeSession', () => {
-	let client: OpencodeClient;
+			await wrappedFetch(request);
 
-	beforeEach(() => {
-		client = createMockClient();
-	});
-
-	it('returns the session id', async () => {
-		vi.mocked(client.session.create).mockResolvedValue({ data: { id: 'session-1' } } as never);
-		const id = await createOpencodeSession(client, 'My session');
-		expect(id).toBe('session-1');
-		expect(client.session.create).toHaveBeenCalledWith({
-			body: { title: 'My session' },
+			expect(mockGlobalFetch).toHaveBeenCalledWith(
+				`${baseUrl}session`,
+				expect.objectContaining({
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						Authorization: `Basic ${Buffer.from('opencode:secret').toString('base64')}`,
+					},
+				})
+			);
 		});
 	});
 
-	it('throws when response is empty', async () => {
-		vi.mocked(client.session.create).mockResolvedValue({ data: null } as never);
-		await expect(createOpencodeSession(client)).rejects.toThrow(
-			'Failed to create opencode session: empty response'
-		);
-	});
-});
+	describe('session operations', () => {
+		let agent: OpenCodeAgent;
+		let mockClient: OpencodeClient;
 
-describe('promptOpencodeSessionAsync', () => {
-	let client: OpencodeClient;
-
-	beforeEach(() => {
-		client = createMockClient();
-	});
-
-	it('sends a text prompt with optional tools', async () => {
-		vi.mocked(client.session.promptAsync).mockResolvedValue(undefined as never);
-		await promptOpencodeSessionAsync(client, 'session-1', 'Hello', {
-			tools: { read: true },
+		beforeEach(() => {
+			OpenCodeAgent.reset();
+			vi.clearAllMocks();
+			mockClient = createMockClient();
+			createSdkClient.mockReturnValue(mockClient);
+			agent = new OpenCodeAgent(createMockEnv(), baseUrl);
 		});
-		expect(client.session.promptAsync).toHaveBeenCalledWith({
-			path: { id: 'session-1' },
-			body: {
-				parts: [{ type: 'text', text: 'Hello' }],
-				tools: { read: true },
-			},
+
+		describe('createSession', () => {
+			it('returns the session when creation succeeds', async () => {
+				const session = { id: 'session-1' } as Session;
+				vi.mocked(mockClient.session.create).mockResolvedValue({ data: session } as never);
+
+				const result = await agent.createSession('My session');
+
+				expect(result).toBe(session);
+				expect(mockClient.session.create).toHaveBeenCalledWith({
+					body: { title: 'My session' },
+				});
+			});
+
+			it('throws when response data is empty', async () => {
+				vi.mocked(mockClient.session.create).mockResolvedValue({ data: null } as never);
+
+				await expect(agent.createSession('My session')).rejects.toThrow(
+					'Failed to create opencode session: empty response'
+				);
+			});
 		});
-	});
-});
 
-describe('getOpencodeSession', () => {
-	let client: OpencodeClient;
+		describe('getSession', () => {
+			it('returns session data', async () => {
+				const session = { id: 'session-1' } as Session;
+				vi.mocked(mockClient.session.get).mockResolvedValue({ data: session } as never);
 
-	beforeEach(() => {
-		client = createMockClient();
-	});
+				const result = await agent.getSession('session-1');
 
-	it('returns session data', async () => {
-		const session = { id: 'session-1', status: 'running' };
-		vi.mocked(client.session.get).mockResolvedValue({ data: session } as never);
-		expect(await getOpencodeSession(client, 'session-1')).toBe(session);
-	});
+				expect(result).toBe(session);
+				expect(mockClient.session.get).toHaveBeenCalledWith({ path: { id: 'session-1' } });
+			});
 
-	it('throws when response is empty', async () => {
-		const client = createMockClient();
-		vi.mocked(client.session.get).mockResolvedValue({ data: null } as never);
-		await expect(getOpencodeSession(client, 'session-1')).rejects.toThrow(
-			'Failed to get opencode session: empty response'
-		);
-	});
-});
+			it('throws when response data is empty', async () => {
+				vi.mocked(mockClient.session.get).mockResolvedValue({ data: null } as never);
 
-describe('listOpencodeSessionMessages', () => {
-	let client: OpencodeClient;
+				await expect(agent.getSession('session-1')).rejects.toThrow(
+					'Failed to get opencode session: empty response'
+				);
+			});
+		});
 
-	beforeEach(() => {
-		client = createMockClient();
-	});
-	it('returns normalized messages', async () => {
-		const messages = [{ info: { id: 'm1' }, parts: [{ id: 'p1', type: 'text', text: 'Hi' }] }];
-		vi.mocked(client.session.messages).mockResolvedValue({ data: messages } as never);
-		const result = await listOpencodeSessionMessages(client, 'session-1');
-		expect(result).toEqual(messages);
-	});
+		describe('getMessages', () => {
+			it('returns messages', async () => {
+				const messages = [{ info: { id: 'm1' }, parts: [{ id: 'p1', type: 'text', text: 'Hi' }] }];
+				vi.mocked(mockClient.session.messages).mockResolvedValue({ data: messages } as never);
 
-	it('returns empty array when response is empty', async () => {
-		vi.mocked(client.session.messages).mockResolvedValue({ data: null } as never);
-		expect(await listOpencodeSessionMessages(client, 'session-1')).toEqual([]);
+				const result = await agent.getMessages('session-1');
+
+				expect(result).toEqual(messages);
+				expect(mockClient.session.messages).toHaveBeenCalledWith({ path: { id: 'session-1' } });
+			});
+
+			it('returns empty array when response data is null', async () => {
+				vi.mocked(mockClient.session.messages).mockResolvedValue({ data: null } as never);
+
+				const result = await agent.getMessages('session-1');
+
+				expect(result).toEqual([]);
+			});
+		});
+
+		describe('promptAsync', () => {
+			it('sends a text prompt with optional tools', async () => {
+				vi.mocked(mockClient.session.promptAsync).mockResolvedValue(undefined as never);
+
+				await agent.promptAsync('session-1', 'Hello', { tools: { read: true } });
+
+				expect(mockClient.session.promptAsync).toHaveBeenCalledWith({
+					path: { id: 'session-1' },
+					body: {
+						parts: [{ type: 'text', text: 'Hello' }],
+						tools: { read: true },
+					},
+				});
+			});
+
+			it('sends a text prompt without tools by default', async () => {
+				vi.mocked(mockClient.session.promptAsync).mockResolvedValue(undefined as never);
+
+				await agent.promptAsync('session-1', 'Hello');
+
+				expect(mockClient.session.promptAsync).toHaveBeenCalledWith({
+					path: { id: 'session-1' },
+					body: {
+						parts: [{ type: 'text', text: 'Hello' }],
+						tools: undefined,
+					},
+				});
+			});
+		});
 	});
 });

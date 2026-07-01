@@ -7,7 +7,6 @@ import type { Env, StoredTokenData } from '../types';
 import type { ActivityContent } from './linear';
 
 import {
-	createLinearClient,
 	emitAgentActivity,
 	getStoredToken,
 	getWorkspaceTokenKey,
@@ -44,6 +43,7 @@ describe('getStoredToken', () => {
 	beforeEach(() => {
 		mockEnv = createMockEnv();
 	});
+
 	it('returns parsed token when present', async () => {
 		const { env, get } = mockEnv;
 		const token: StoredTokenData = {
@@ -87,43 +87,6 @@ describe('setStoredToken', () => {
 		};
 		await setStoredToken(env, 'ws-1', token);
 		expect(put).toHaveBeenCalledWith('linear_oauth_token_ws-1', JSON.stringify(token));
-	});
-});
-
-describe('createLinearClient', () => {
-	let mockEnv: MockEnv;
-
-	beforeEach(() => {
-		mockEnv = createMockEnv();
-	});
-
-	it('returns null when token is missing', async () => {
-		const { env, get } = mockEnv;
-		get.mockResolvedValue(null);
-		expect(await createLinearClient(env, 'ws-1')).toBeNull();
-	});
-
-	it('returns null when token is expiring soon', async () => {
-		const { env, get } = createMockEnv();
-		const token: StoredTokenData = {
-			access_token: 'token',
-			refresh_token: 'refresh',
-			expires_at: Date.now() + 60 * 1000,
-		};
-		get.mockResolvedValue(JSON.stringify(token));
-		expect(await createLinearClient(env, 'ws-1')).toBeNull();
-	});
-
-	it('returns LinearClient when token is valid', async () => {
-		const { env, get } = createMockEnv();
-		const token: StoredTokenData = {
-			access_token: 'valid-token',
-			refresh_token: 'refresh',
-			expires_at: Date.now() + 60 * 60 * 1000,
-		};
-		get.mockResolvedValue(JSON.stringify(token));
-		const client = await createLinearClient(env, 'ws-1');
-		expect(client).toBeInstanceOf(LinearClient);
 	});
 });
 

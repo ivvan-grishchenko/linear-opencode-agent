@@ -1,11 +1,41 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Env } from './types';
+import type { Env, CodingTaskMessage } from './types';
 
 import worker from './index';
 import { handleOAuthAuthorize, handleOAuthCallback } from './lib/oauth';
 import { processCodingTask } from './lib/queue';
-import { handleAgentSessionWebhook, verifyWebhook } from './lib/webhook';
+import { handleAgentSessionWebhook } from './lib/webhook';
+
+vi.mock('@linear/sdk/webhooks', () => {
+	const LinearWebhookClient = vi.fn().mockImplementation(function () {
+		return {
+			createHandler: () => {
+				const handlers = new Map<string, ((payload: unknown) => Promise<void>)[]>();
+				const handler = Object.assign(
+					vi.fn(async (request: Request) => {
+						const signature = request.headers.get('linear-signature');
+						if (!signature) return new Response('Missing webhook signature', { status: 400 });
+						if (signature === 'invalid') return new Response('Invalid webhook', { status: 400 });
+						const payload = (await request.json()) as { type?: string };
+						const list = handlers.get(payload.type ?? '') ?? [];
+						await Promise.all(list.map((h) => h(payload)));
+						return new Response('OK', { status: 200 });
+					}),
+					{
+						on: vi.fn((type: string, cb: (payload: unknown) => Promise<void>) => {
+							const list = handlers.get(type) ?? [];
+							list.push(cb);
+							handlers.set(type, list);
+						}),
+					}
+				);
+				return handler;
+			},
+		};
+	});
+	return { LinearWebhookClient };
+});
 
 vi.mock('./lib/oauth', () => ({
 	handleOAuthAuthorize: vi.fn().mockResolvedValue(new Response('authorize', { status: 200 })),
@@ -13,8 +43,7 @@ vi.mock('./lib/oauth', () => ({
 }));
 
 vi.mock('./lib/webhook', () => ({
-	handleAgentSessionWebhook: vi.fn().mockReturnValue(new Response('webhook', { status: 200 })),
-	verifyWebhook: vi.fn().mockResolvedValue({ action: 'created' }),
+	handleAgentSessionWebhook: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('./lib/queue', () => ({
@@ -38,10 +67,7 @@ describe('fetch handler', () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
-		vi.mocked(verifyWebhook).mockResolvedValue({ action: 'created' } as never);
-		vi.mocked(handleAgentSessionWebhook).mockResolvedValue(
-			new Response('webhook', { status: 200 })
-		);
+		vi.mocked(handleAgentSessionWebhook).mockResolvedValue(undefined);
 
 		env = createMockEnv();
 		executionContext = createExecutionContext();
@@ -74,11 +100,15 @@ describe('fetch handler', () => {
 		expect(response.status).toBe(500);
 	});
 
-	it('returns 401 when webhook verification fails', async () => {
-		const request = new Request('https://worker.example.com/webhook', { method: 'POST' });
-		vi.mocked(verifyWebhook).mockRejectedValue(new Error('bad signature'));
+	it('returns 400 when webhook verification fails', async () => {
+		const request = new Request('https://worker.example.com/webhook', {
+			method: 'POST',
+			headers: { 'linear-signature': 'invalid' },
+			body: JSON.stringify({ type: 'AgentSessionEvent' }),
+		});
 		const response = await worker.fetch(request, env, executionContext);
-		expect(response.status).toBe(401);
+		expect(response.status).toBe(400);
+		expect(handleAgentSessionWebhook).not.toHaveBeenCalled();
 	});
 
 	it('return 405 when called with wrong method', async () => {
@@ -88,11 +118,20 @@ describe('fetch handler', () => {
 	});
 
 	it('routes verified webhooks to handler', async () => {
-		const request = new Request('https://worker.example.com/webhook', { method: 'POST' });
+		const payload = {
+			type: 'AgentSessionEvent',
+			action: 'created',
+			agentSession: { id: 'as-1', issueId: 'i-1' },
+			organizationId: 'org-1',
+		};
+		const request = new Request('https://worker.example.com/webhook', {
+			method: 'POST',
+			headers: { 'linear-signature': 'valid', 'content-type': 'application/json' },
+			body: JSON.stringify(payload),
+		});
 		const testEnv = createMockEnv();
 		const response = await worker.fetch(request, testEnv, executionContext);
-		expect(verifyWebhook).toHaveBeenCalledWith(request, 'secret');
-		expect(handleAgentSessionWebhook).toHaveBeenCalledWith(testEnv, { action: 'created' });
+		expect(handleAgentSessionWebhook).toHaveBeenCalledWith(testEnv, payload);
 		expect(response.status).toBe(200);
 	});
 
@@ -116,8 +155,8 @@ describe('queue handler', () => {
 			body: { action: 'created', agentSessionId: 's1', organizationId: 'org-1', payload: {} },
 			ack: vi.fn<() => void>(),
 			retry: vi.fn<() => void>(),
-		} as unknown as MessageBatch<Record<string, unknown>>['messages'][number];
-		const batch = { messages: [message] } as unknown as MessageBatch<Record<string, unknown>>;
+		} as unknown as MessageBatch<CodingTaskMessage>['messages'][number];
+		const batch = { messages: [message] } as unknown as MessageBatch<CodingTaskMessage>;
 		await worker.queue(batch, env);
 		expect(processCodingTask).toHaveBeenCalledWith(message.body, env);
 		expect(message.ack).toHaveBeenCalled();

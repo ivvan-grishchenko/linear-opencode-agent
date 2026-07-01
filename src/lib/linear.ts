@@ -1,25 +1,20 @@
 import { LinearClient, AgentActivityType } from '@linear/sdk';
 
-import type { Env, StoredTokenData } from '../types';
-
-// Linear SDK references process.env when building the User-Agent header.
-// Cloudflare Workers do not provide `process` by default, so we provide a
-// minimal polyfill before any LinearClient is constructed.
-if (typeof globalThis.process === 'undefined') {
-	// @ts-expect-error Cloudflare Workers do not define `process` globally.
-	globalThis.process = { env: {} };
-}
+import type { StoredTokenData, Env } from '../types';
 
 const OAUTH_TOKEN_KEY_PREFIX = 'linear_oauth_token_';
 
-export function getWorkspaceTokenKey(workspaceId: string): string {
+type ActivityContent =
+	| { type: AgentActivityType.Thought; body: string }
+	| { type: AgentActivityType.Action; action: string; parameter: string; result?: string }
+	| { type: AgentActivityType.Response; body: string }
+	| { type: AgentActivityType.Error; body: string };
+
+function getWorkspaceTokenKey(workspaceId: string): string {
 	return `${OAUTH_TOKEN_KEY_PREFIX}${workspaceId}`;
 }
 
-export async function getStoredToken(
-	env: Env,
-	workspaceId: string
-): Promise<StoredTokenData | null> {
+async function getStoredToken(env: Env, workspaceId: string): Promise<StoredTokenData | null> {
 	const raw = await env.LINEAR_TOKENS.get(getWorkspaceTokenKey(workspaceId));
 	if (!raw) return null;
 	try {
@@ -29,7 +24,7 @@ export async function getStoredToken(
 	}
 }
 
-export async function setStoredToken(
+async function setStoredToken(
 	env: Env,
 	workspaceId: string,
 	token: StoredTokenData
@@ -37,30 +32,7 @@ export async function setStoredToken(
 	await env.LINEAR_TOKENS.put(getWorkspaceTokenKey(workspaceId), JSON.stringify(token));
 }
 
-export async function createLinearClient(
-	env: Env,
-	workspaceId: string
-): Promise<LinearClient | null> {
-	const tokenData = await getStoredToken(env, workspaceId);
-	if (!tokenData) return null;
-
-	// Refresh if expiring within 5 minutes.
-	const buffer = 5 * 60 * 1000;
-	if (Date.now() >= tokenData.expires_at - buffer)
-		// Token refresh is handled by the OAuth module; here we just fail fast
-		// so the consumer can emit a clear error and let the user re-auth.
-		return null;
-
-	return new LinearClient({ accessToken: tokenData.access_token });
-}
-
-export type ActivityContent =
-	| { type: AgentActivityType.Thought; body: string }
-	| { type: AgentActivityType.Action; action: string; parameter: string; result?: string }
-	| { type: AgentActivityType.Response; body: string }
-	| { type: AgentActivityType.Error; body: string };
-
-export async function emitAgentActivity(
+async function emitAgentActivity(
 	client: LinearClient,
 	agentSessionId: string,
 	content: ActivityContent
@@ -71,7 +43,7 @@ export async function emitAgentActivity(
 	});
 }
 
-export async function updateSessionExternalUrl(
+async function updateSessionExternalUrl(
 	client: LinearClient,
 	agentSessionId: string,
 	url: string
@@ -81,14 +53,49 @@ export async function updateSessionExternalUrl(
 	});
 }
 
-export async function removeAgentDelegate(client: LinearClient, issueId: string): Promise<void> {
+async function removeAgentDelegate(client: LinearClient, issueId: string): Promise<void> {
 	await client.updateIssue(issueId, { delegateId: null });
 }
 
-export async function postIssueComment(
+async function postIssueComment(
 	client: LinearClient,
 	issueId: string,
 	body: string
 ): Promise<void> {
 	await client.createComment({ issueId, body });
 }
+
+async function abortDelegation(
+	linearClient: LinearClient,
+	agentSessionId: string,
+	issueId: string | undefined,
+	message: string
+): Promise<void> {
+	await emitAgentActivity(linearClient, agentSessionId, {
+		type: AgentActivityType.Error,
+		body: message,
+	});
+
+	if (!issueId) return;
+
+	try {
+		await Promise.all([
+			postIssueComment(linearClient, issueId, `Agent could not start: ${message}`),
+			removeAgentDelegate(linearClient, issueId),
+		]);
+	} catch (err) {
+		console.error('Failed to clean up issue after abort:', err);
+	}
+}
+
+export type { ActivityContent };
+export {
+	getWorkspaceTokenKey,
+	getStoredToken,
+	setStoredToken,
+	emitAgentActivity,
+	updateSessionExternalUrl,
+	removeAgentDelegate,
+	postIssueComment,
+	abortDelegation,
+};
