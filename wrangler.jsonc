@@ -5,44 +5,44 @@
 	"compatibility_date": "2024-09-23",
 	"compatibility_flags": ["nodejs_compat"],
 	"observability": {
-		"enabled": true,
+		"enabled": true
 	},
 	"kv_namespaces": [
 		{
 			"binding": "LINEAR_TOKENS",
 			"id": "44e45ff60dc54ea5ab6778a8d4e880ea",
-			"remote": true,
+			"remote": true
 		},
 		{
 			"binding": "SESSION_STATE",
 			"id": "137c09864ae3435db6026b56063175e4",
-			"remote": true,
+			"remote": true
 		},
 		{
 			"binding": "REPO_MAP",
 			"id": "c0d9d8b64569420290324086ba7d2793",
-			"remote": true,
-		},
+			"remote": true
+		}
 	],
 	"queues": {
 		"producers": [
 			{
 				"binding": "CODING_TASKS",
-				"queue": "linear-opencode-agent-tasks",
-			},
+				"queue": "linear-opencode-agent-tasks"
+			}
 		],
 		"consumers": [
 			{
 				"queue": "linear-opencode-agent-tasks",
 				"max_concurrency": 1,
 				"max_batch_size": 1,
-				"max_batch_timeout": 30,
-			},
-		],
+				"max_batch_timeout": 30
+			}
+		]
 	},
 	"vars": {
 		"LINEAR_CLIENT_ID": "c6d0775a9850b67d3f152d567bd301ef",
 		"WORKER_URL": "https://linear-opencode-agent.bben-rasha.workers.dev",
-		"OPENCODE_SERVER_URL": "https://opencode-server-production-e1d9.up.railway.app",
-	},
+		"OPENCODE_SERVER_URL": " https://marijuana-gps-retailer-very.trycloudflare.com"
+	}
 }

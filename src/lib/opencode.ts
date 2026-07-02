@@ -37,12 +37,14 @@ class OpenCodeAgent {
 		this.client = createSdkClient({
 			baseUrl,
 			fetch: (request) => {
-				const { url, ...options } = request;
-
-				return fetch(url, {
-					...options,
-					headers: { ...options.headers, Authorization: `Basic ${credentialToken}` },
+				const modifiedRequest = new Request(request, {
+					headers: {
+						...Object.fromEntries(request.headers.entries()),
+						Authorization: `Basic ${credentialToken}`,
+					},
 				});
+
+				return fetch(modifiedRequest);
 			},
 		});
 

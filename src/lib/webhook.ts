@@ -79,7 +79,7 @@ export async function handleAgentSessionWebhook(
 	const openCodeSessionId = await getOpenCodeSessionId(env, payload, issue.title, agent);
 	await emitAgentActivity(linearClient, agentSessionId, {
 		type: AgentActivityType.Thought,
-		body: 'Created OpenCode session',
+		body: `Created OpenCode session. ${openCodeSessionId}`,
 	});
 
 	const task: CodingTaskMessage = {

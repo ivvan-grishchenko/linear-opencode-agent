@@ -151,6 +151,7 @@ async function pollAndTranslate(
 	const emitted = new Set<string>();
 
 	for await (const event of events) {
+		console.log('Received event', event);
 		const eventSessionId = extractSessionId(event);
 		if (eventSessionId !== undefined && eventSessionId !== opencodeSessionId) continue;
 
