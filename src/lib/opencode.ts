@@ -33,18 +33,12 @@ class OpenCodeAgent {
 		const password = env.OPENCODE_SERVER_PASSWORD;
 		const username = 'opencode';
 		const credentialToken = Buffer.from(`${username}:${password}`).toString('base64');
+		const authorization = `Basic ${credentialToken}`;
 
 		this.client = createSdkClient({
 			baseUrl,
-			fetch: (request) => {
-				const modifiedRequest = new Request(request, {
-					headers: {
-						...Object.fromEntries(request.headers.entries()),
-						Authorization: `Basic ${credentialToken}`,
-					},
-				});
-
-				return fetch(modifiedRequest);
+			headers: {
+				Authorization: authorization,
 			},
 		});
 
@@ -60,9 +54,11 @@ class OpenCodeAgent {
 	}
 
 	public async getEventsStream(
-		options?: EventSubscribeData
+		options?: Partial<EventSubscribeData> & { signal?: AbortSignal }
 	): Promise<AsyncGenerator<Event, unknown, unknown>> {
-		const response = await this.client.event.subscribe(options);
+		const response = await this.client.event.subscribe({
+			...options,
+		});
 
 		return response.stream;
 	}

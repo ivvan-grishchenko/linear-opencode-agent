@@ -595,4 +595,43 @@ describe('processCodingTask', () => {
 			expect.objectContaining({ body: expect.stringContaining('should be skipped') })
 		);
 	});
+
+	it('emits an error when the event stream stalls', async () => {
+		const { env } = mockEnv;
+		let capturedSignal: AbortSignal | undefined;
+
+		mockAgent.getEventsStream.mockImplementation(async (options) => {
+			capturedSignal = options?.signal;
+			return (async function* () {
+				yield idleEvent('foreign-session');
+				await new Promise<void>((resolve) => {
+					if (capturedSignal?.aborted) {
+						resolve();
+						return;
+					}
+					capturedSignal?.addEventListener('abort', () => resolve());
+				});
+			})();
+		});
+
+		vi.useFakeTimers();
+
+		const promise = processCodingTask(
+			createMessage('created', { payload: delegationPayload() }),
+			env
+		);
+
+		await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 1000);
+		await promise;
+
+		expect(capturedSignal).toBeDefined();
+		expect(emitAgentActivity).toHaveBeenCalledWith(
+			expect.any(LinearClient),
+			'session-1',
+			expect.objectContaining({
+				type: AgentActivityType.Error,
+				body: expect.stringContaining('event stream stalled'),
+			})
+		);
+	});
 });

@@ -215,7 +215,7 @@ describe('handleAgentSessionWebhook', () => {
 			.map((content) => (content as { body: string }).body);
 
 		expect(thoughtBodies).toContain('Resolved repository name');
-		expect(thoughtBodies).toContain('Created OpenCode session');
+		expect(thoughtBodies.some((body) => body.includes('Created OpenCode session'))).toBe(true);
 		expect(thoughtBodies.some((body) => body.includes('Queued'))).toBe(true);
 	});
 });

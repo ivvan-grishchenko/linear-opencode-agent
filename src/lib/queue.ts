@@ -13,6 +13,7 @@ import { buildDelegationPrompt, buildMentionPrompt, MENTION_READ_ONLY_TOOLS } fr
 import { translatePart } from './translator';
 
 const SESSION_MAP_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
+const EVENT_STREAM_STALL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
  * Process one queue message. This is the long-running orchestrator.
@@ -147,50 +148,75 @@ async function pollAndTranslate(
 	opencodeSessionId: string,
 	options: PollOptions
 ): Promise<void> {
-	const events = await agent.getEventsStream();
-	const emitted = new Set<string>();
+	const controller = new AbortController();
+	let stallTimeoutId: ReturnType<typeof setTimeout> | undefined;
+	let stalled = false;
 
-	for await (const event of events) {
-		console.log('Received event', event);
-		const eventSessionId = extractSessionId(event);
-		if (eventSessionId !== undefined && eventSessionId !== opencodeSessionId) continue;
+	const resetStallTimer = () => {
+		if (stallTimeoutId) clearTimeout(stallTimeoutId);
+		stallTimeoutId = setTimeout(() => {
+			stalled = true;
+			controller.abort();
+		}, EVENT_STREAM_STALL_TIMEOUT_MS);
+	};
 
-		switch (event.type) {
-			case 'message.part.updated': {
-				const part = event.properties.part;
+	try {
+		const events = await agent.getEventsStream({ signal: controller.signal });
+		const emitted = new Set<string>();
+		resetStallTimer();
 
-				if (part.type === 'text') break;
+		for await (const event of events) {
+			resetStallTimer();
+			console.log('Received event', event);
+			const eventSessionId = extractSessionId(event);
+			if (eventSessionId !== undefined && eventSessionId !== opencodeSessionId) continue;
 
-				if (part.type === 'tool' && part.state.status === 'running') break;
+			switch (event.type) {
+				case 'message.part.updated': {
+					const part = event.properties.part;
 
-				const key = part.type === 'tool' ? `${part.id}:${part.state.status}` : part.id;
-				if (emitted.has(key)) break;
-				emitted.add(key);
+					if (part.type === 'text') break;
 
-				const content = translatePart(part, { isFinal: false });
-				if (content) await emitAgentActivity(linearClient, agentSessionId, content);
+					if (part.type === 'tool' && part.state.status === 'running') break;
 
-				break;
-			}
+					const key = part.type === 'tool' ? `${part.id}:${part.state.status}` : part.id;
+					if (emitted.has(key)) break;
+					emitted.add(key);
 
-			case 'session.idle': {
-				const isFinished = await agent.isSessionFinished(opencodeSessionId);
-				if (isFinished) {
-					await emitFinalText(agent, linearClient, agentSessionId, opencodeSessionId, options);
-					return;
+					const content = translatePart(part, { isFinal: false });
+					if (content) await emitAgentActivity(linearClient, agentSessionId, content);
+
+					break;
 				}
-				break;
-			}
 
-			case 'session.error': {
-				const errorProp = event.properties.error;
-				await emitAgentActivity(linearClient, agentSessionId, {
-					type: AgentActivityType.Error,
-					body: formatSessionError(errorProp),
-				});
-				break;
+				case 'session.idle': {
+					const isFinished = await agent.isSessionFinished(opencodeSessionId);
+					if (isFinished) {
+						await emitFinalText(agent, linearClient, agentSessionId, opencodeSessionId, options);
+						return;
+					}
+					break;
+				}
+
+				case 'session.error': {
+					const errorProp = event.properties.error;
+					await emitAgentActivity(linearClient, agentSessionId, {
+						type: AgentActivityType.Error,
+						body: formatSessionError(errorProp),
+					});
+					break;
+				}
 			}
 		}
+
+		if (stalled) {
+			await emitAgentActivity(linearClient, agentSessionId, {
+				type: AgentActivityType.Error,
+				body: `The opencode event stream stalled: no events received for ${EVENT_STREAM_STALL_TIMEOUT_MS / 1000 / 60} minutes. The session may be stuck; please try again.`,
+			});
+		}
+	} finally {
+		if (stallTimeoutId) clearTimeout(stallTimeoutId);
 	}
 }
 

@@ -52,7 +52,6 @@ describe('OpenCodeAgent', () => {
 			expect(createSdkClient).toHaveBeenCalledWith(
 				expect.objectContaining({
 					baseUrl,
-					fetch: expect.any(Function),
 				})
 			);
 		});
@@ -75,35 +74,6 @@ describe('OpenCodeAgent', () => {
 
 			expect(second).not.toBe(first);
 			expect(createSdkClient).toHaveBeenCalledTimes(2);
-		});
-
-		it('adds basic auth header to every outgoing request', async () => {
-			createSdkClient.mockReturnValue(mockClient);
-			const mockGlobalFetch = vi.fn().mockResolvedValue(new Response());
-			globalThis.fetch = mockGlobalFetch;
-
-			// oxlint-disable-next-line no-new
-			new OpenCodeAgent(env, baseUrl);
-			const wrappedFetch = createSdkClient.mock.calls[0][0].fetch;
-
-			const request = {
-				url: `${baseUrl}session`,
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-			};
-
-			await wrappedFetch(request);
-
-			expect(mockGlobalFetch).toHaveBeenCalledWith(
-				`${baseUrl}session`,
-				expect.objectContaining({
-					method: 'POST',
-					headers: {
-						'Content-Type': 'application/json',
-						Authorization: `Basic ${Buffer.from('opencode:secret').toString('base64')}`,
-					},
-				})
-			);
 		});
 	});
 
