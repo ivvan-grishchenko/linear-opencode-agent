@@ -1,0 +1,15 @@
+export const MENTION_READ_ONLY_TOOLS: Record<string, boolean> = {
+	apply_patch: false,
+	bash: false,
+	edit: false,
+	glob: true,
+	grep: true,
+	lsp: true,
+	question: false,
+	read: true,
+	skill: true,
+	todowrite: false,
+	webfetch: false,
+	websearch: false,
+	write: false,
+};
