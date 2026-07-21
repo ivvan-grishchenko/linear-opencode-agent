@@ -1,0 +1,1 @@
+ALTER TABLE `agent_sessions` ADD `mode` text DEFAULT 'mention' NOT NULL;

@@ -1,0 +1,46 @@
+# VCS
+.git
+.gitattributes
+.gitignore
+
+# Node / pnpm
+node_modules
+**/node_modules
+.pnpm-store
+
+# Build artifacts
+dist
+build
+coverage
+.nyc_output
+
+# Tests
+test
+**/*.spec.ts
+**/*.e2e-spec.ts
+vitest.config.ts
+vitest.config.e2e.ts
+
+# Local database
+*.db
+local.db
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# IDE / editor
+.idea
+.vscode
+*.swp
+
+# Logs
+logs
+*.log
+
+# Misc
+README.md
+AGENTS.md
+LICENSE
+global.d.ts
