@@ -58,7 +58,7 @@ WORKDIR /app
 
 # Production-only dependency install (excludes devDependencies like drizzle-kit, vitest)
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+RUN --mount=type=cache,id=pnpm-store-prod,target=/pnpm/store \
     pnpm install --prod --frozen-lockfile \
     && pnpm store prune
 
