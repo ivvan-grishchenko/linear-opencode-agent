@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.1.0](https://github.com/ivvan-grishchenko/linear-opencode-agent/compare/linear-opencode-agent-v1.0.0...linear-opencode-agent-v1.1.0) (2026-07-22)
+## [1.1.0](https://github.com/ivvan-grishchenko/linear-opencode-agent/compare/v1.0.0...v1.1.0) (2026-07-22)
 
 
 ### Features
