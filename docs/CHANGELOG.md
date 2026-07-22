@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/ivvan-grishchenko/linear-opencode-agent/compare/v1.3.0...v1.3.1) (2026-07-22)
+
+
+### Bug Fixes
+
+* **workflow:** isolate cache id for different runtimes ([#8](https://github.com/ivvan-grishchenko/linear-opencode-agent/issues/8)) ([960ae03](https://github.com/ivvan-grishchenko/linear-opencode-agent/commit/960ae03c3c5019ab7a429dd715c16b991f6e7825))
+
 ## [1.3.0](https://github.com/ivvan-grishchenko/linear-opencode-agent/compare/v1.2.0...v1.3.0) (2026-07-22)
 
 
