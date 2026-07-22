@@ -2,10 +2,9 @@
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "release-type": "node",
   "include-v-in-tag": true,
-  "package-name": "linear-opencode-agent",
+  "include-component-in-tag": false,
   "packages": {
     ".": {
-      "package-name": "linear-opencode-agent",
       "changelog-path": "docs/CHANGELOG.md"
     }
   }
