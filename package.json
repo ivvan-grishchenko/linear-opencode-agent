@@ -6,7 +6,6 @@
   "description": "Linear AI agent that codes on assigned issues and assists in comments via opencode",
   "keywords": [
     "ai-agent",
-    "cloudflare-worker",
     "linear",
     "opencode"
   ],

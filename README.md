@@ -1,98 +1,93 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# linear-opencode-agent
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+A Linear AI agent that automatically codes on assigned issues and assists in comments via [opencode](https://opencode.ai).
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+Built with NestJS, Drizzle ORM (SQLite), and the Linear & opencode SDKs.
 
-## Description
+## Prerequisites
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+- **Node.js** >= 24.14.0
+- **pnpm** ^11.1.2
+- A Linear OAuth application (client ID, client secret, webhook secret)
+- A running [opencode server](https://opencode.ai)
 
-## Project setup
+## Environment Variables
 
-```bash
-$ pnpm install
-```
+Copy `.env.example` to `.env` and fill in the values:
 
-## Compile and run the project
+| Variable | Description |
+|---|---|
+| `LINEAR_CLIENT_ID` | Linear OAuth app client ID |
+| `LINEAR_CLIENT_SECRET` | Linear OAuth app client secret |
+| `LINEAR_WEBHOOK_SECRET` | Linear webhook signing secret |
+| `APP_URL` | Public URL of the app (used for webhook callbacks) |
+| `APP_PORT` | Port the server listens on (default: `4000`) |
+| `DB_FILE_NAME` | SQLite database path (e.g. `file:/data/app.db` or `local.db`) |
+| `OPENCODE_SERVER_URL` | URL of the opencode server |
+| `OPENCODE_SERVER_PASSWORD` | opencode server auth password |
+
+## Local Development
 
 ```bash
-# development
-$ pnpm run start
+# Install dependencies
+pnpm install
 
-# watch mode
-$ pnpm run start:dev
+# Apply DB migrations (development)
+pnpm db:push
 
-# production mode
-$ pnpm run start:prod
+# Start in watch mode
+pnpm run start:dev
 ```
 
-## Run tests
+The server starts on `http://localhost:4000` by default.
+
+## Docker
+
+### Build the image
 
 ```bash
-# unit tests
-$ pnpm run test
-
-# e2e tests
-$ pnpm run test:e2e
-
-# test coverage
-$ pnpm run test:cov
+docker build -t linear-opencode-agent:latest .
 ```
 
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+### Run with Docker Compose
 
 ```bash
-$ pnpm install -g @nestjs/mau
-$ mau deploy
+docker compose up -d
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+This will:
+1. Run a one-shot migration service that applies Drizzle migrations to a shared SQLite volume.
+2. Start the app on port `4000` once migrations complete.
 
-## Resources
+The SQLite database is persisted in the `sqlite-data` named volume.
 
-Check out a few resources that may come in handy when working with NestJS:
+## Database
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+Migrations are managed with [Drizzle Kit](https://orm.drizzle.team/kit-docs/overview).
 
-## Support
+```bash
+pnpm db:generate   # Generate migration files from schema changes
+pnpm db:migrate    # Run migrations (used in Docker)
+pnpm db:push       # Push schema changes directly (dev only)
+```
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+## Testing
 
-## Stay in touch
+```bash
+pnpm test          # Unit tests
+pnpm test:e2e      # E2E tests
+pnpm test:cov      # Coverage report
+```
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+## Linting & Formatting
+
+```bash
+pnpm lint          # Lint with oxlint
+pnpm lint:fix      # Auto-fix lint issues
+pnpm fmt           # Format with oxfmt
+pnpm fmt:check     # Check formatting
+```
 
 ## License
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+ISC
