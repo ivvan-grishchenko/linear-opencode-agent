@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.2](https://github.com/ivvan-grishchenko/linear-opencode-agent/compare/v1.3.1...v1.3.2) (2026-07-23)
+
+
+### Bug Fixes
+
+* **ci:** chain Docker publish off release-please instead of tag push ([#10](https://github.com/ivvan-grishchenko/linear-opencode-agent/issues/10)) ([bad5af9](https://github.com/ivvan-grishchenko/linear-opencode-agent/commit/bad5af94107309633700418b21876ae39eec40da))
+
 ## [1.3.1](https://github.com/ivvan-grishchenko/linear-opencode-agent/compare/v1.3.0...v1.3.1) (2026-07-22)
 
 
