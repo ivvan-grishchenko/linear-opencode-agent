@@ -1,6 +1,6 @@
 {
   "name": "linear-opencode-agent",
-  "version": "1.3.2",
+  "version": "1.4.0",
   "private": true,
   "type": "module",
   "description": "Linear AI agent that codes on assigned issues and assists in comments via opencode",
