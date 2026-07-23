@@ -1,8 +1,9 @@
-import { agentSessions, repoMappings } from '@db/schema';
+import { agentSessions } from '@db/schema';
 import { type DatabaseClient, DatabaseInject } from '@modules/database';
 import { type IOpencodeService, OpencodeInject } from '@modules/opencode';
+import { type IRepoMappingService, RepoMappingInject } from '@modules/repo-mapping';
 import { Inject, Injectable } from '@nestjs/common';
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 
 import type { IAgentSessionRepository } from '../interface';
 
@@ -12,7 +13,9 @@ export class AgentSessionRepository implements IAgentSessionRepository {
 		@Inject(DatabaseInject.CLIENT)
 		private readonly db: DatabaseClient,
 		@Inject(OpencodeInject.SERVICE)
-		private readonly opencodeService: IOpencodeService
+		private readonly opencodeService: IOpencodeService,
+		@Inject(RepoMappingInject.SERVICE)
+		private readonly repoMappingService: IRepoMappingService
 	) {}
 
 	async updateStatus(
@@ -36,14 +39,12 @@ export class AgentSessionRepository implements IAgentSessionRepository {
 	): Promise<string | null> {
 		if (!projectId) return null;
 
-		const rows = await this.db
-			.select({ repositoryName: repoMappings.repositoryName })
-			.from(repoMappings)
-			.where(
-				and(eq(repoMappings.organizationId, organizationId), eq(repoMappings.projectId, projectId))
-			);
+		const mapping = await this.repoMappingService.findByOrganizationAndProject(
+			organizationId,
+			projectId
+		);
 
-		return rows[0]?.repositoryName ?? null;
+		return mapping?.repositoryName ?? null;
 	}
 
 	async findOrCreateSession(params: {
