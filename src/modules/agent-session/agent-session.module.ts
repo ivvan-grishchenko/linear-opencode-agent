@@ -2,6 +2,7 @@ import { DatabaseModule } from '@modules/database/database.module';
 import { LinearModule } from '@modules/linear/linear.module';
 import { OpencodeEventsModule } from '@modules/opencode-events/opencode-events.module';
 import { OpencodeModule } from '@modules/opencode/opencode.module';
+import { RepoMappingModule } from '@modules/repo-mapping/repo-mapping.module';
 import { Module } from '@nestjs/common';
 
 import {
@@ -14,7 +15,7 @@ import {
 
 @Module({
 	exports: [AgentSessionProcessorProvider],
-	imports: [DatabaseModule, LinearModule, OpencodeModule, OpencodeEventsModule],
+	imports: [DatabaseModule, LinearModule, OpencodeModule, OpencodeEventsModule, RepoMappingModule],
 	providers: [
 		AgentSessionProcessorProvider,
 		AgentSessionListenerProvider,

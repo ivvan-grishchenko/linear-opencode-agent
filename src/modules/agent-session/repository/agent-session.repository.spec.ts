@@ -1,15 +1,17 @@
 import type { ResultSet } from '@libsql/client';
 import type { DatabaseClient } from '@modules/database';
 import type { IOpencodeService } from '@modules/opencode';
+import type { IRepoMappingService } from '@modules/repo-mapping';
 import type { Mocked } from '@suites/unit';
 import type { ChainMock } from 'chain-mock';
 
-import { agentSessions, repoMappings } from '@db/schema';
+import { agentSessions } from '@db/schema';
 import { DatabaseInject } from '@modules/database';
 import { OpencodeInject } from '@modules/opencode';
+import { RepoMappingInject } from '@modules/repo-mapping';
 import { TestBed } from '@suites/unit';
 import { chainMock } from 'chain-mock';
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AgentSessionRepository } from './agent-session.repository';
@@ -18,6 +20,7 @@ describe('agentSessionRepository', () => {
 	let repository: AgentSessionRepository;
 	let db: ChainMock<DatabaseClient>;
 	let opencodeService: Mocked<IOpencodeService>;
+	let repoMappingService: Mocked<IRepoMappingService>;
 
 	beforeEach(async () => {
 		vi.clearAllMocks();
@@ -30,6 +33,7 @@ describe('agentSessionRepository', () => {
 
 		repository = unit;
 		opencodeService = unitRef.get(OpencodeInject.SERVICE);
+		repoMappingService = unitRef.get(RepoMappingInject.SERVICE);
 	});
 
 	afterEach(() => vi.resetAllMocks());
@@ -74,30 +78,30 @@ describe('agentSessionRepository', () => {
 			expect(result).toBeNull();
 		});
 
-		it('should return null when no repository found', async () => {
-			await db.select.from.where.mockResolvedValue([]);
+		it('should return null when no mapping found', async () => {
+			await repoMappingService.findByOrganizationAndProject.mockResolvedValue(null);
 
 			const result = await repository.resolveRepositoryName('org-1', 'proj-1');
 
 			expect(result).toBeNull();
-			expect(db.select.from.where).toHaveBeenChainCalledWith(
-				[{ repositoryName: repoMappings.repositoryName }],
-				[repoMappings],
-				[and(eq(repoMappings.organizationId, 'org-1'), eq(repoMappings.projectId, 'proj-1'))]
+			expect(repoMappingService.findByOrganizationAndProject).toHaveBeenCalledWith(
+				'org-1',
+				'proj-1'
 			);
 		});
 
-		it('should return repository name when repository is found', async () => {
-			await db.select.from.where.mockResolvedValue([{ repositoryName: 'repo' }]);
+		it('should return repository name when mapping is found', async () => {
+			await repoMappingService.findByOrganizationAndProject.mockResolvedValue({
+				createdAt: 1,
+				organizationId: 'org-1',
+				projectId: 'proj-1',
+				repositoryName: 'repo',
+				updatedAt: 1,
+			});
 
 			const result = await repository.resolveRepositoryName('org-1', 'proj-1');
 
 			expect(result).toBe('repo');
-			expect(db.select.from.where).toHaveBeenChainCalledWith(
-				[{ repositoryName: repoMappings.repositoryName }],
-				[repoMappings],
-				[and(eq(repoMappings.organizationId, 'org-1'), eq(repoMappings.projectId, 'proj-1'))]
-			);
 		});
 	});
 

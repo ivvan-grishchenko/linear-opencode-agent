@@ -28,6 +28,7 @@ export default defineConfig({
 			exclude: [
 				'**/*.enum.ts',
 				'**/*.interface.ts',
+				'**/*.dto.ts',
 				'**/index.ts',
 				'**/*.module.ts',
 				'**/*.provider.ts',
