@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/ivvan-grishchenko/linear-opencode-agent/compare/v1.3.2...v1.4.0) (2026-07-23)
+
+
+### Features
+
+* **repo-mapping:** Add repo-mapping module for CRUD operations on repo_mappings table ([#12](https://github.com/ivvan-grishchenko/linear-opencode-agent/issues/12)) ([a9fca1e](https://github.com/ivvan-grishchenko/linear-opencode-agent/commit/a9fca1eee64d8311e3d1629357a66d50a52a53b3))
+
 ## [1.3.2](https://github.com/ivvan-grishchenko/linear-opencode-agent/compare/v1.3.1...v1.3.2) (2026-07-23)
 
 
