@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/ivvan-grishchenko/linear-opencode-agent/compare/v1.4.1...v1.5.0) (2026-07-24)
+
+
+### Features
+
+* **docs:** add scalar support for documentation ([#16](https://github.com/ivvan-grishchenko/linear-opencode-agent/issues/16)) ([eb4d4a6](https://github.com/ivvan-grishchenko/linear-opencode-agent/commit/eb4d4a6d96d1bbd41842098139e1d2f480bbab3d))
+
 ## [1.4.1](https://github.com/ivvan-grishchenko/linear-opencode-agent/compare/v1.4.0...v1.4.1) (2026-07-24)
 
 
