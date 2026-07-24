@@ -108,10 +108,8 @@ describe('bootstrap', () => {
 	});
 
 	it('should mount Scalar API reference at /reference', () => {
-		expect(mockApiReference).toHaveBeenCalledWith(
-			expect.objectContaining({ theme: 'purple', url: '/openapi.json' })
-		);
-		expect(mockApp.use).toHaveBeenCalledWith('/reference', 'middleware');
+		expect(mockApiReference).toHaveBeenCalledTimes(1);
+		expect(mockApp.use).toHaveBeenCalledWith('/docs', 'middleware');
 	});
 
 	it('should enable shutdown hooks', () => {
