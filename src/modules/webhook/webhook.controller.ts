@@ -22,6 +22,7 @@ import {
 	Post,
 	Req,
 } from '@nestjs/common';
+import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 
 import type { IWebhookService } from './webhook.service.interface';
 
@@ -31,6 +32,7 @@ type AgentSessionEventWebhookPayload$1 = AgentSessionEventWebhookPayload & {
 	type: 'AgentSessionEvent';
 };
 
+@ApiTags('webhook')
 @Controller('webhook')
 export class WebhookController {
 	private readonly logger = new Logger(WebhookController.name);
@@ -49,6 +51,16 @@ export class WebhookController {
 
 	@Post()
 	@HttpCode(HttpStatus.OK)
+	@ApiOperation({
+		description:
+			'Receives signed Linear webhooks (e.g. AgentSessionEvent), verifies them, and dispatches to the service layer.',
+		summary: 'Linear webhook receiver',
+	})
+	@ApiResponse({ description: 'Webhook accepted (returns "ok").', status: HttpStatus.OK })
+	@ApiResponse({
+		description: 'Invalid signature, missing raw body, or processing error.',
+		status: HttpStatus.BAD_REQUEST,
+	})
 	async webhook(@Req() request: RawBodyRequest<Request>) {
 		if (!request.rawBody) {
 			this.logger.error('Raw body is missing. ');

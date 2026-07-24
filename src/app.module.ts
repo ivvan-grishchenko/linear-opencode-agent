@@ -10,7 +10,9 @@ import { RepoMappingModule } from '@modules/repo-mapping/repo-mapping.module';
 import { WebhookModule } from '@modules/webhook/webhook.module';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { APP_INTERCEPTOR, APP_PIPE } from '@nestjs/core';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { ZodSerializerInterceptor, ZodValidationPipe } from 'nestjs-zod';
 
 @Module({
 	imports: [
@@ -27,6 +29,10 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
 		OpencodeEventsModule,
 		RepoMappingModule,
 		WebhookModule,
+	],
+	providers: [
+		{ provide: APP_PIPE, useClass: ZodValidationPipe },
+		{ provide: APP_INTERCEPTOR, useClass: ZodSerializerInterceptor },
 	],
 })
 export class AppModule {}
