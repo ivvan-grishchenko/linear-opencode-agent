@@ -49,15 +49,23 @@ The server starts on `http://localhost:4000` by default.
 docker build -t linear-opencode-agent:latest .
 ```
 
-### Run with Docker Compose
+### Run the container
 
 ```bash
-docker compose up -d
+docker run -d \
+  -p 4000:4000 \
+  -v sqlite-data:/data \
+  -e DB_FILE_NAME=file:/data/app.db \
+  -e LINEAR_CLIENT_ID=<your-client-id> \
+  -e LINEAR_CLIENT_SECRET=<your-client-secret> \
+  -e LINEAR_WEBHOOK_SECRET=<your-webhook-secret> \
+  -e APP_URL=<your-public-url> \
+  -e OPENCODE_SERVER_URL=<your-opencode-server> \
+  -e OPENCODE_SERVER_PASSWORD=<your-opencode-password> \
+  linear-opencode-agent:latest
 ```
 
-This will:
-1. Run a one-shot migration service that applies Drizzle migrations to a shared SQLite volume.
-2. Start the app on port `4000` once migrations complete.
+Drizzle migrations are applied automatically when the application starts, so no separate migration step is required.
 
 The SQLite database is persisted in the `sqlite-data` named volume.
 
@@ -67,9 +75,11 @@ Migrations are managed with [Drizzle Kit](https://orm.drizzle.team/kit-docs/over
 
 ```bash
 pnpm db:generate   # Generate migration files from schema changes
-pnpm db:migrate    # Run migrations (used in Docker)
+pnpm db:migrate    # Apply migrations manually (local development)
 pnpm db:push       # Push schema changes directly (dev only)
 ```
+
+In production and inside the Docker image, pending migrations are applied automatically on startup using [`drizzle-orm/libsql/migrator`](https://orm.drizzle.team/docs/migrations). The migration files in `./drizzle` are bundled into the image and executed at runtime.
 
 ## Testing
 

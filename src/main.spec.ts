@@ -9,6 +9,8 @@ const mockApp = vi.hoisted(() => ({
 	listen: vi.fn().mockResolvedValue(undefined),
 }));
 
+const mockRunMigrations = vi.hoisted(() => vi.fn());
+
 vi.mock('@nestjs/core', () => ({
 	NestFactory: {
 		create: vi.fn().mockResolvedValue(mockApp),
@@ -17,6 +19,14 @@ vi.mock('@nestjs/core', () => ({
 
 vi.mock('@config/app.config', () => ({
 	AppConfig: { KEY: 'app' },
+}));
+
+vi.mock('@modules/database', () => ({
+	DatabaseInject: { CLIENT: 'DatabaseClient' },
+}));
+
+vi.mock('@db/migrate', () => ({
+	runMigrations: mockRunMigrations,
 }));
 
 vi.mock('./app.module', () => ({
@@ -30,6 +40,11 @@ describe('bootstrap', () => {
 
 	it('should get app config using AppConfig.KEY', () => {
 		expect(mockApp.get).toHaveBeenCalledWith('app');
+	});
+
+	it('should run migrations before starting the server', () => {
+		expect(mockApp.get).toHaveBeenCalledWith('DatabaseClient');
+		expect(mockRunMigrations).toHaveBeenCalledWith({ port: 3_000 });
 	});
 
 	it('should enable shutdown hooks', () => {

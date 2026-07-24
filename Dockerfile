@@ -10,7 +10,7 @@ ENV PNPM_HOME=/pnpm \
 
 RUN corepack enable && corepack prepare pnpm@11.1.2 --activate
 
-# ---- Stage 1: full dependency install (used by build & migrations) ----
+# ---- Stage 1: full dependency install (used by build) ----
 FROM base AS deps
 
 WORKDIR /app
@@ -36,19 +36,7 @@ COPY src ./src
 
 RUN pnpm build
 
-# ---- Stage 3: one-shot migrations ----
-FROM deps AS migrations
-
-WORKDIR /app
-
-COPY drizzle.config.ts ./
-COPY drizzle ./drizzle
-
-USER node
-
-CMD ["node", "node_modules/drizzle-kit/bin.cjs", "migrate"]
-
-# ---- Stage 4: production runtime ----
+# ---- Stage 3: production runtime ----
 FROM base AS runtime
 
 ENV NODE_ENV=production \
@@ -62,8 +50,9 @@ RUN --mount=type=cache,id=pnpm-store-prod,target=/pnpm/store \
     pnpm install --prod --frozen-lockfile \
     && pnpm store prune
 
-# Built artifacts
+# Built artifacts and migration files (applied on startup by drizzle-orm/libsql/migrator)
 COPY --from=build /app/dist ./dist
+COPY drizzle ./drizzle
 
 # SQLite volume mount point, writable by the non-root 'node' user
 RUN mkdir -p /data && chown node:node /data
