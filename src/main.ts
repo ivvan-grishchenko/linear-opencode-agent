@@ -32,8 +32,8 @@ async function bootstrap() {
 		.addTag('webhook', 'Linear webhook receiver')
 		.build();
 
-  const openApiDocument = SwaggerModule.createDocument(app,  openApiConfig);
-  const scalarContent = cleanupOpenApiDoc(openApiDocument);
+	const openApiDocument = SwaggerModule.createDocument(app, openApiConfig);
+	const scalarContent = cleanupOpenApiDoc(openApiDocument);
 
 	app.use('/docs', apiReference({ content: scalarContent }));
 

@@ -17,11 +17,7 @@ import { ZodResponse } from 'nestjs-zod';
 
 import type { IRepoMappingService } from './interface';
 
-import {
-	CreateRepoMappingDto,
-	RepoMappingResponseDto,
-	UpdateRepoMappingDto,
-} from './dto';
+import { CreateRepoMappingDto, RepoMappingResponseDto, UpdateRepoMappingDto } from './dto';
 import { RepoMappingInject } from './repo-mapping.enum';
 
 @ApiTags('repo-mappings')
