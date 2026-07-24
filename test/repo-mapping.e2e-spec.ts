@@ -1,5 +1,6 @@
 import type { INestApplication } from '@nestjs/common';
 
+import { runMigrations } from '@db/migrate';
 import { DatabaseInject } from '@modules/database';
 import { OauthInject } from '@modules/oauth';
 import { OpencodeEventsInject } from '@modules/opencode-events';
@@ -21,38 +22,6 @@ vi.hoisted(() => {
 	process.env.OPENCODE_SERVER_URL = 'http://localhost:8080';
 	process.env.OPENCODE_SERVER_PASSWORD = 'test-password';
 });
-
-const TABLES_SQL = [
-	`CREATE TABLE IF NOT EXISTS oauth_tokens (
-		workspace_id text PRIMARY KEY NOT NULL,
-		workspace_name text NOT NULL,
-		access_token text NOT NULL,
-		refresh_token text NOT NULL,
-		expires_at integer NOT NULL,
-		updated_at integer NOT NULL
-	)`,
-	`CREATE TABLE IF NOT EXISTS repo_mappings (
-		created_at integer NOT NULL,
-		organization_id text NOT NULL,
-		project_id text NOT NULL,
-		repository_name text NOT NULL,
-		updated_at integer NOT NULL,
-		PRIMARY KEY(organization_id, project_id)
-	)`,
-	`CREATE TABLE IF NOT EXISTS agent_sessions (
-		agent_session_id text PRIMARY KEY NOT NULL,
-		created_at integer NOT NULL,
-		error_message text,
-		issue_id text,
-		open_code_base_url text,
-		open_code_session_id text,
-		organization_id text NOT NULL,
-		repository_name text,
-		status text NOT NULL,
-		updated_at integer NOT NULL,
-		mode text DEFAULT 'mention' NOT NULL
-	)`,
-];
 
 describe('repo-mapping e2e', () => {
 	let app: INestApplication;
@@ -81,8 +50,7 @@ describe('repo-mapping e2e', () => {
 		// oxlint-disable-next-line typescript/no-explicit-any
 		const db = moduleFixture.get<any>(DatabaseInject.CLIENT);
 
-		// oxlint-disable-next-line no-await-in-loop
-		for (const tableSql of TABLES_SQL) await db.run(sql.raw(tableSql));
+		await runMigrations(db);
 
 		app = moduleFixture.createNestApplication();
 		await app.init();

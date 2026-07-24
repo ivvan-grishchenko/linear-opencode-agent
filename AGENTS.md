@@ -18,10 +18,10 @@ Guidance for AI coding agents (opencode, Claude Code, etc.) working in this repo
 
 ```
 src/
-  main.ts                  # bootstrap; reads APP_PORT, validates config
+  main.ts                  # bootstrap; reads APP_PORT, validates config, runs migrations
   app.module.ts            # root module — wires all feature modules
   config/                  # zod-validated typed config (env files via @nestjs/config)
-  db/                      # Drizzle schema + client
+  db/                      # Drizzle schema + client + migration helper
   modules/
     agent-session/         # opencode session lifecycle, events, repo, service
     database/              # DB health / connection provider
@@ -35,8 +35,7 @@ drizzle/                   # generated SQL migrations + meta/
 test/                      # unit tests (mirrors src/)
 drizzle.config.ts
 nest-cli.json
-compose.yaml               # two-service deploy: migrate (one-shot) + app
-Dockerfile                 # multi-stage; targets: deps, build, migrations, runtime
+Dockerfile                 # multi-stage; targets: deps, build, runtime
 ```
 
 Each feature module follows the same internal shape:
@@ -90,10 +89,10 @@ pnpm db:push                # push schema (dev only, no migration file)
 
 ```bash
 docker build -t linear-opencode-agent:latest .
-docker compose up -d        # runs migrate (one-shot) then app
+docker run -d -p 4000:4000 -v sqlite-data:/data -e DB_FILE_NAME=file:/data/app.db ... linear-opencode-agent:latest
 ```
 
-The image has named stages: `deps`, `build`, `migrations`, `runtime`. `compose.yaml` builds the `migrations` target for the one-shot migrator and the `runtime` target for the app, both sharing the `sqlite-data` volume at `/data`.
+Migrations are applied automatically when the app starts. The image has named stages: `deps`, `build`, `runtime`. The `sqlite-data` volume is mounted at `/data`.
 
 ## Code conventions
 
@@ -124,8 +123,8 @@ The image has named stages: `deps`, `build`, `migrations`, `runtime`. `compose.y
   git add drizzle/
   ```
 - Never edit generated SQL in `drizzle/*.sql` by hand.
-- In Docker, migrations run via the dedicated `migrate` service (see `compose.yaml`) which uses the `migrations` target. The app container itself never runs migrations.
-- Both `migrate` and `app` must mount the same `DB_FILE_NAME` (default `file:/data/app.db` in Docker).
+- In Docker, migrations are applied automatically on application startup using `drizzle-orm/libsql/migrator`.
+- The app container must mount the `DB_FILE_NAME` path (default `file:/data/app.db` in Docker).
 
 ## Commit & PR conventions
 
@@ -150,3 +149,9 @@ The image has named stages: `deps`, `build`, `migrations`, `runtime`. `compose.y
 - **Add a new env var** → add to `src/config/`, `.env.example`, and this table.
 - **Add a new domain entity** → schema in `src/db/schema.ts`, then `pnpm db:generate`.
 - **Add a new HTTP route** → controller in the relevant feature module; validate input with `zod`; return DTOs from `interface/`.
+
+# Agent Instructions
+
+## Tool Usage Guidelines
+- Whenever you need to read, write, edit, search, or refactor files, you must use the `serena` MCP server tools.
+- Rely on Serena's semantic code retrieval and high-level symbol abstractions instead of raw file system commands or low-level line edits.
