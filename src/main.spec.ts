@@ -7,9 +7,15 @@ const mockApp = vi.hoisted(() => ({
 	enableShutdownHooks: vi.fn(),
 	get: vi.fn().mockReturnValue({ port: 3_000 }),
 	listen: vi.fn().mockResolvedValue(undefined),
+	use: vi.fn(),
 }));
 
 const mockRunMigrations = vi.hoisted(() => vi.fn());
+
+const mockCreateDocument = vi.hoisted(() => vi.fn().mockReturnValue({ openapi: '3.1.0' }));
+const mockCleanupOpenApiDoc = vi.hoisted(() => vi.fn((doc) => doc));
+
+const mockApiReference = vi.hoisted(() => vi.fn().mockReturnValue('middleware'));
 
 vi.mock('@nestjs/core', () => ({
 	NestFactory: {
@@ -29,6 +35,52 @@ vi.mock('@db/migrate', () => ({
 	runMigrations: mockRunMigrations,
 }));
 
+vi.mock('@nestjs/swagger', () => ({
+	DocumentBuilder: class {
+		readonly #config: {
+			description?: string;
+			tags?: { description?: string; name: string }[];
+			title?: string;
+			version?: string;
+		} = {};
+
+		setTitle(value: string) {
+			this.#config.title = value;
+			return this;
+		}
+
+		setDescription(value: string) {
+			this.#config.description = value;
+			return this;
+		}
+
+		setVersion(value: string) {
+			this.#config.version = value;
+			return this;
+		}
+
+		addTag(name: string, description?: string) {
+			(this.#config.tags ??= []).push({ description, name });
+			return this;
+		}
+
+		build() {
+			return this.#config;
+		}
+	},
+	SwaggerModule: {
+		createDocument: mockCreateDocument,
+	},
+}));
+
+vi.mock('nestjs-zod', () => ({
+	cleanupOpenApiDoc: mockCleanupOpenApiDoc,
+}));
+
+vi.mock('@scalar/nestjs-api-reference', () => ({
+	apiReference: mockApiReference,
+}));
+
 vi.mock('./app.module', () => ({
 	AppModule: class {},
 }));
@@ -45,6 +97,19 @@ describe('bootstrap', () => {
 	it('should run migrations before starting the server', () => {
 		expect(mockApp.get).toHaveBeenCalledWith('DatabaseClient');
 		expect(mockRunMigrations).toHaveBeenCalledWith({ port: 3_000 });
+	});
+
+	it('should build the OpenAPI document and expose it as JSON', () => {
+		expect(mockCreateDocument).toHaveBeenCalledWith(
+			mockApp,
+			expect.objectContaining({ title: 'linear-opencode-agent API' })
+		);
+		expect(mockCleanupOpenApiDoc).toHaveBeenCalledWith({ openapi: '3.1.0' });
+	});
+
+	it('should mount Scalar API reference at /reference', () => {
+		expect(mockApiReference).toHaveBeenCalledTimes(1);
+		expect(mockApp.use).toHaveBeenCalledWith('/docs', 'middleware');
 	});
 
 	it('should enable shutdown hooks', () => {

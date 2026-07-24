@@ -1,10 +1,9 @@
 import type { Mocked } from '@suites/unit';
 
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { NotFoundException } from '@nestjs/common';
 import { TestBed } from '@suites/unit';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { CreateRepoMappingDto } from './dto';
 import type { IRepoMappingService } from './interface';
 
 import { RepoMappingController } from './repo-mapping.controller';
@@ -67,13 +66,7 @@ describe('repoMappingController', () => {
 	});
 
 	describe('create', () => {
-		it('should throw BadRequestException when body is invalid', async () => {
-			await expect(controller.create({} as CreateRepoMappingDto)).rejects.toThrow(
-				BadRequestException
-			);
-		});
-
-		it('should delegate valid body to service', async () => {
+		it('should delegate body to service', async () => {
 			const mapping = {
 				createdAt: 1,
 				organizationId: 'org-1',
@@ -99,13 +92,7 @@ describe('repoMappingController', () => {
 	});
 
 	describe('update', () => {
-		it('should throw BadRequestException when body is invalid', async () => {
-			await expect(
-				controller.update('org-1', 'proj-1', {} as { repositoryName: string })
-			).rejects.toThrow(BadRequestException);
-		});
-
-		it('should delegate valid body to service', async () => {
+		it('should delegate body to service', async () => {
 			const mapping = {
 				createdAt: 1,
 				organizationId: 'org-1',

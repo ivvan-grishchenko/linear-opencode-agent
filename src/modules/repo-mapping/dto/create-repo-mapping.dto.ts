@@ -1,9 +1,10 @@
+import { createZodDto } from 'nestjs-zod';
 import { z } from 'zod';
 
-export const CreateRepoMappingSchema = z.object({
+const createRepoMappingSchema = z.object({
 	organizationId: z.string(),
 	projectId: z.string(),
 	repositoryName: z.string(),
 });
 
-export type CreateRepoMappingDto = z.infer<typeof CreateRepoMappingSchema>;
+export class CreateRepoMappingDto extends createZodDto(createRepoMappingSchema) {}
