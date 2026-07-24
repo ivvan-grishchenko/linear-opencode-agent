@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/ivvan-grishchenko/linear-opencode-agent/compare/v1.4.0...v1.4.1) (2026-07-24)
+
+
+### Bug Fixes
+
+* **docker:** run Drizzle migrations automatically on app startup ([#14](https://github.com/ivvan-grishchenko/linear-opencode-agent/issues/14)) ([07af05b](https://github.com/ivvan-grishchenko/linear-opencode-agent/commit/07af05bc90050bd2fad21dd5c0dd7760ccf75f76))
+
 ## [1.4.0](https://github.com/ivvan-grishchenko/linear-opencode-agent/compare/v1.3.2...v1.4.0) (2026-07-23)
 
 
